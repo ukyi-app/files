@@ -1,0 +1,198 @@
+openapi: 3.1.0
+info:
+  title: files — 홈랩 공용 파일 스토어
+  version: 0.1.0
+  description: >
+    content-addressed blob 스토어. 두 표면을 별도 TCP 리스너로 분리한다 —
+    내부(:8080, `/api/*` 전체, Bearer API 키) / 공개(:8081, public 버킷 다운로드+카탈로그, 인증 없음).
+servers:
+  - url: http://files.home.example
+    description: 내부 API (:8080)
+  - url: https://files.ukyi.app
+    description: 공개 다운로드 (:8081)
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  schemas:
+    ObjectMeta:
+      type: object
+      additionalProperties: false
+      required: [contentType, size, sha256, createdAt, uploadedBy]
+      properties:
+        contentType: { type: string }
+        size: { type: integer, format: int64, minimum: 0 }
+        sha256: { type: string }
+        createdAt: { type: string, format: date-time }
+        uploadedBy: { type: string }
+    ObjectEntry:
+      type: object
+      additionalProperties: false
+      required: [key, contentType, size, sha256, createdAt, uploadedBy]
+      properties:
+        key: { type: string }
+        contentType: { type: string }
+        size: { type: integer, format: int64, minimum: 0 }
+        sha256: { type: string }
+        createdAt: { type: string, format: date-time }
+        uploadedBy: { type: string }
+    BucketMeta:
+      type: object
+      additionalProperties: false
+      required: [visibility, owner, createdAt]
+      properties:
+        visibility: { type: string, enum: [public, internal] }
+        owner: { type: string }
+        createdAt: { type: string, format: date-time }
+    BucketEntry:
+      type: object
+      additionalProperties: false
+      required: [bucket, visibility, owner, createdAt]
+      properties:
+        bucket: { type: string }
+        visibility: { type: string, enum: [public, internal] }
+        owner: { type: string }
+        createdAt: { type: string, format: date-time }
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error: { type: string }
+    CreateBucket:
+      type: object
+      additionalProperties: false
+      required: [visibility]
+      properties:
+        visibility: { type: string, enum: [public, internal] }
+
+paths:
+  /api/files/{bucket}/{key}:
+    parameters:
+      - { name: bucket, in: path, required: true, schema: { type: string } }
+      - { name: key, in: path, required: true, schema: { type: string } }
+    put:
+      summary: 객체 업로드(스트리밍)
+      tags: [internal]
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        "201":
+          description: 생성됨
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ObjectMeta" }
+        "403": { description: 스코프 없음, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "413": { description: 용량 초과, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "507": { description: 저장 공간 부족, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    get:
+      summary: 객체 다운로드(Range/ETag)
+      tags: [internal]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: Range, in: header, required: false, schema: { type: string } }
+        - { name: If-None-Match, in: header, required: false, schema: { type: string } }
+      responses:
+        "200": { description: 전체 본문 }
+        "206": { description: 부분 본문 }
+        "304": { description: 변경 없음 }
+        "404": { description: 없음, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "416": { description: Range 불충족 }
+    head:
+      summary: 객체 메타 헤더
+      tags: [internal]
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: 헤더만 }
+        "404": { description: 없음 }
+    delete:
+      summary: 객체 삭제
+      tags: [internal]
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: 삭제됨 }
+        "403": { description: 스코프 없음 }
+  /api/files/{bucket}:
+    get:
+      summary: 버킷 객체 목록
+      tags: [internal]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: bucket, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: 객체 목록
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ObjectEntry" }
+  /api/buckets/{bucket}:
+    put:
+      summary: 버킷 생성(admin)
+      tags: [internal]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: bucket, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateBucket" }
+      responses:
+        "201":
+          description: 생성됨
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BucketMeta" }
+        "403": { description: admin 아님 }
+        "400": { description: 잘못된/예약 버킷명 }
+  /api/buckets:
+    get:
+      summary: 버킷 목록(admin)
+      tags: [internal]
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: 버킷 목록
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/BucketEntry" }
+  /healthz:
+    get:
+      summary: liveness
+      tags: [internal]
+      responses:
+        "200": { description: 정상 }
+  /readyz:
+    get:
+      summary: readiness
+      tags: [internal]
+      responses:
+        "200": { description: 준비됨 }
+        "503": { description: 미준비 }
+  /{bucket}/{key}:
+    get:
+      summary: 공개 다운로드(public 버킷만)
+      tags: [public]
+      parameters:
+        - { name: bucket, in: path, required: true, schema: { type: string } }
+        - { name: key, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: 다운로드(attachment, nosniff) }
+        "206": { description: 부분 본문 }
+        "404": { description: 없음/비공개 }
+  /:
+    get:
+      summary: 공개 카탈로그(HTML)
+      tags: [public]
+      responses:
+        "200": { description: public 버킷 목록 HTML, content: { text/html: {} } }
