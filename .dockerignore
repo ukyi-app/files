@@ -1,0 +1,8 @@
+/target
+/.git
+/.worktrees
+**/node_modules
+**/*.log
+.DS_Store
+/docs
+/clients/node/dist
