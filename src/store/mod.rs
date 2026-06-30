@@ -2,8 +2,8 @@ pub mod atomic;
 pub mod locks;
 
 use crate::error::AppError;
-use crate::meta::ObjectMeta;
-use crate::path::{meta_path, safe_object_path};
+use crate::meta::{BucketMeta, ObjectMeta};
+use crate::path::{meta_path, safe_object_path, valid_bucket};
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
 use sha2::{Digest, Sha256};
@@ -172,6 +172,78 @@ impl Store {
             .await
             .map_err(|_| AppError::NotFound)?;
         Ok((meta, f))
+    }
+
+    pub async fn put_bucket(&self, bucket: &str, meta: &BucketMeta) -> Result<(), AppError> {
+        valid_bucket(bucket)?;
+        let path = self.root.join(bucket).join(".bucket.json");
+        atomic::write_atomic(&path, &serde_json::to_vec(meta).unwrap())
+            .await
+            .map_err(AppError::Internal)?;
+        Ok(())
+    }
+
+    pub async fn get_bucket(&self, bucket: &str) -> Result<BucketMeta, AppError> {
+        valid_bucket(bucket)?;
+        let path = self.root.join(bucket).join(".bucket.json");
+        let raw = tokio::fs::read(&path).await.map_err(|_| AppError::NotFound)?;
+        serde_json::from_slice(&raw).map_err(|_| AppError::NotFound)
+    }
+
+    /// 버킷 서브트리를 재귀 순회하며 `*.meta.json`을 수집(중첩 키 포함).
+    /// `.bucket.json`/temp 제외, 포인터-깨진(blob 부재) 객체 제외. 키 정렬 반환.
+    /// (발견 P2-1: 비재귀 스캔은 중첩 키 객체를 누락하므로 반드시 재귀)
+    pub async fn list(&self, bucket: &str) -> Result<Vec<(String, ObjectMeta)>, AppError> {
+        valid_bucket(bucket)?;
+        let bucket_dir = self.root.join(bucket);
+        if !tokio::fs::try_exists(&bucket_dir)
+            .await
+            .map_err(AppError::Internal)?
+        {
+            return Ok(vec![]);
+        }
+        let mut out: Vec<(String, ObjectMeta)> = Vec::new();
+        let mut stack = vec![bucket_dir.clone()];
+        while let Some(dir) = stack.pop() {
+            let mut rd = tokio::fs::read_dir(&dir).await.map_err(AppError::Internal)?;
+            while let Some(entry) = rd.next_entry().await.map_err(AppError::Internal)? {
+                let path = entry.path();
+                let ft = entry.file_type().await.map_err(AppError::Internal)?;
+                if ft.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name.starts_with(".tmp-") || name == ".bucket.json" || !name.ends_with(".meta.json")
+                {
+                    continue;
+                }
+                let rel = path.strip_prefix(&bucket_dir).unwrap();
+                let key = rel
+                    .to_string_lossy()
+                    .strip_suffix(".meta.json")
+                    .unwrap()
+                    .to_string();
+                let raw = match tokio::fs::read(&path).await {
+                    Ok(r) => r,
+                    Err(_) => continue,
+                };
+                let meta: ObjectMeta = match serde_json::from_slice(&raw) {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+                if !tokio::fs::try_exists(self.blob_path(&meta.sha256))
+                    .await
+                    .map_err(AppError::Internal)?
+                {
+                    continue; // 포인터-깨진 객체 비서빙
+                }
+                out.push((key, meta));
+            }
+        }
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(out)
     }
 
     pub async fn delete(&self, bucket: &str, key: &str) -> Result<(), AppError> {
@@ -353,6 +425,56 @@ mod tests {
         let (_gm, got) = s.get_bytes("b", "k").await.unwrap();
         assert_eq!(got, data);
         no_temp_residue(&s).await;
+    }
+
+    #[tokio::test]
+    async fn list_returns_serving_only_with_nested_keys() {
+        let (s, _d) = store();
+        s.put("b", "top.txt", "text/plain", "x", b"a".to_vec())
+            .await
+            .unwrap();
+        s.put("b", "dir/sub/nested.zip", "application/zip", "x", b"bb".to_vec())
+            .await
+            .unwrap();
+        // 포인터-깨진 객체: 메타만, blob 없음
+        let bogus = crate::meta::ObjectMeta {
+            content_type: "x".into(),
+            size: 1,
+            sha256: "00".repeat(32),
+            created_at: crate::clock::now_rfc3339(),
+            uploaded_by: "x".into(),
+        };
+        atomic::write_atomic(
+            &s.meta_for("b", "broken").unwrap(),
+            &serde_json::to_vec(&bogus).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let listed = s.list("b").await.unwrap();
+        let keys: Vec<&str> = listed.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, vec!["dir/sub/nested.zip", "top.txt"]); // 정렬·broken 제외
+    }
+
+    #[tokio::test]
+    async fn list_empty_bucket_is_ok() {
+        let (s, _d) = store();
+        assert!(s.list("nope").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn bucket_meta_roundtrip() {
+        let (s, _d) = store();
+        let bm = crate::meta::BucketMeta {
+            visibility: crate::meta::Visibility::Public,
+            owner: "page".into(),
+            created_at: crate::clock::now_rfc3339(),
+        };
+        s.put_bucket("b", &bm).await.unwrap();
+        let got = s.get_bucket("b").await.unwrap();
+        assert_eq!(got.owner, "page");
+        assert_eq!(got.visibility, crate::meta::Visibility::Public);
+        assert!(matches!(s.get_bucket("missing").await, Err(AppError::NotFound)));
     }
 
     #[tokio::test]
