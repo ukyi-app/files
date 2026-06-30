@@ -4,8 +4,11 @@ pub mod locks;
 use crate::error::AppError;
 use crate::meta::ObjectMeta;
 use crate::path::{meta_path, safe_object_path};
+use bytes::Bytes;
+use futures::{Stream, StreamExt};
 use sha2::{Digest, Sha256};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use tokio::io::AsyncWriteExt;
 
 /// content-addressed 저장소. 바이트는 `.objects/<sha256>`에 불변 저장하고,
 /// 키의 `<key>.meta.json`이 sha를 가리키는 단일 atomic 커밋 포인터다.
@@ -58,6 +61,69 @@ impl Store {
         let meta = ObjectMeta {
             content_type: content_type.into(),
             size: bytes.len() as u64,
+            sha256: sha,
+            created_at: crate::clock::now_rfc3339(),
+            uploaded_by: by.into(),
+        };
+        atomic::write_atomic(&meta_target, &serde_json::to_vec(&meta).unwrap())
+            .await
+            .map_err(AppError::Internal)?;
+        Ok(meta)
+    }
+
+    /// 스트리밍 put — `.objects/.tmp-*`에 청크 기록하며 증분 sha·size 계산.
+    /// 누적 size > max면 중단·temp 삭제·TooLarge. 완료 후 blob이 이미 있으면
+    /// 무결성 검증 후 일치 시 temp 삭제, 불일치(손상) 시 temp를 blob으로 rename해 치유(발견 P3-2).
+    pub async fn put_stream<S, E>(
+        &self,
+        bucket: &str,
+        key: &str,
+        content_type: &str,
+        by: &str,
+        stream: S,
+        max: u64,
+    ) -> Result<ObjectMeta, AppError>
+    where
+        S: Stream<Item = Result<Bytes, E>> + Unpin,
+        E: std::fmt::Display,
+    {
+        let meta_target = self.meta_for(bucket, key)?; // 검증
+        let _g = self.locks.lock(&format!("{bucket}/{key}")).await;
+
+        let objects_dir = self.root.join(".objects");
+        atomic::mkdir_p_durable(&objects_dir)
+            .await
+            .map_err(AppError::Internal)?;
+        let tmp = objects_dir.join(format!(".tmp-{}", atomic::unique_suffix()));
+
+        let (size, sha) = match stream_to_temp(&tmp, stream, max).await {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = tokio::fs::remove_file(&tmp).await; // temp 정리
+                return Err(e);
+            }
+        };
+
+        let blob = self.blob_path(&sha);
+        let existing_intact = matches!(
+            tokio::fs::read(&blob).await,
+            Ok(b) if hex::encode(Sha256::digest(&b)) == sha
+        );
+        if existing_intact {
+            let _ = tokio::fs::remove_file(&tmp).await;
+        } else {
+            // 없거나 손상 → temp를 blob으로 원자적 교체 + parent fsync로 치유/생성
+            tokio::fs::rename(&tmp, &blob)
+                .await
+                .map_err(AppError::Internal)?;
+            atomic::fsync_dir(&objects_dir)
+                .await
+                .map_err(AppError::Internal)?;
+        }
+
+        let meta = ObjectMeta {
+            content_type: content_type.into(),
+            size,
             sha256: sha,
             created_at: crate::clock::now_rfc3339(),
             uploaded_by: by.into(),
@@ -125,6 +191,34 @@ impl Store {
     }
 }
 
+/// 스트림을 temp 파일에 기록하며 증분 sha·size 계산. 누적 size>max면 TooLarge.
+/// 성공 시 `(size, hex_sha)` 반환. temp 정리는 호출자 책임.
+async fn stream_to_temp<S, E>(tmp: &Path, mut stream: S, max: u64) -> Result<(u64, String), AppError>
+where
+    S: Stream<Item = Result<Bytes, E>> + Unpin,
+    E: std::fmt::Display,
+{
+    let mut f = tokio::fs::File::create(tmp)
+        .await
+        .map_err(AppError::Internal)?;
+    let mut hasher = Sha256::new();
+    let mut size: u64 = 0;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| {
+            tracing::warn!(error = %e, "upload stream error");
+            AppError::BadRequest("stream_error")
+        })?;
+        size += chunk.len() as u64;
+        if size > max {
+            return Err(AppError::TooLarge);
+        }
+        hasher.update(&chunk);
+        f.write_all(&chunk).await.map_err(AppError::Internal)?;
+    }
+    f.sync_all().await.map_err(AppError::Internal)?;
+    Ok((size, hex::encode(hasher.finalize())))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,6 +281,78 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(s.head("b", "k").await, Err(AppError::NotFound)));
+    }
+
+    fn byte_stream(
+        data: &[u8],
+        chunk: usize,
+    ) -> impl futures::Stream<Item = Result<bytes::Bytes, std::io::Error>> {
+        let chunks: Vec<Result<bytes::Bytes, std::io::Error>> = data
+            .chunks(chunk.max(1))
+            .map(|c| Ok(bytes::Bytes::copy_from_slice(c)))
+            .collect();
+        futures::stream::iter(chunks)
+    }
+
+    async fn no_temp_residue(s: &Store) {
+        let objects = s.root.join(".objects");
+        if !tokio::fs::try_exists(&objects).await.unwrap() {
+            return;
+        }
+        let mut rd = tokio::fs::read_dir(&objects).await.unwrap();
+        while let Some(e) = rd.next_entry().await.unwrap() {
+            let n = e.file_name();
+            let n = n.to_string_lossy();
+            assert!(!n.starts_with(".tmp-"), "temp residue: {n}");
+        }
+    }
+
+    #[tokio::test]
+    async fn put_stream_roundtrip_large() {
+        let (s, _d) = store();
+        let data = vec![7u8; 100_000];
+        let m = s
+            .put_stream("b", "k", "application/octet-stream", "x", byte_stream(&data, 7000), 1 << 30)
+            .await
+            .unwrap();
+        assert_eq!(m.size, 100_000);
+        assert_eq!(m.sha256, hex_sha(&data));
+        let (_gm, got) = s.get_bytes("b", "k").await.unwrap();
+        assert_eq!(got, data);
+        no_temp_residue(&s).await;
+    }
+
+    #[tokio::test]
+    async fn put_stream_too_large_no_residue_not_committed() {
+        let (s, _d) = store();
+        let data = vec![0u8; 10_000];
+        let err = s
+            .put_stream("b", "k", "x", "x", byte_stream(&data, 1000), 5000)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::TooLarge));
+        no_temp_residue(&s).await;
+        assert!(matches!(s.head("b", "k").await, Err(AppError::NotFound)));
+    }
+
+    #[tokio::test]
+    async fn put_stream_heals_corrupt_blob() {
+        let (s, _d) = store();
+        let data = b"heal me please".to_vec();
+        let sha = hex_sha(&data);
+        // 손상 blob 미리 생성: 올바른 파일명, 잘못된 내용
+        atomic::write_atomic(&s.blob_path(&sha), b"CORRUPT")
+            .await
+            .unwrap();
+        let m = s
+            .put_stream("b", "k", "x", "x", byte_stream(&data, 4), 1 << 30)
+            .await
+            .unwrap();
+        assert_eq!(m.sha256, sha);
+        assert_eq!(tokio::fs::read(s.blob_path(&sha)).await.unwrap(), data); // 치유됨
+        let (_gm, got) = s.get_bytes("b", "k").await.unwrap();
+        assert_eq!(got, data);
+        no_temp_residue(&s).await;
     }
 
     #[tokio::test]

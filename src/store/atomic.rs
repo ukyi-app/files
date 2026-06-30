@@ -50,7 +50,7 @@ pub async fn mkdir_p_durable(dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-fn unique_suffix() -> String {
+pub(crate) fn unique_suffix() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static N: AtomicU64 = AtomicU64::new(0);
     format!("{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed))
