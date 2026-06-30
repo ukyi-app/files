@@ -191,6 +191,30 @@ impl Store {
         serde_json::from_slice(&raw).map_err(|_| AppError::NotFound)
     }
 
+    /// `.bucket.json`을 보유한 최상위 디렉터리를 버킷으로 열거(정렬).
+    pub async fn list_buckets(&self) -> Result<Vec<(String, BucketMeta)>, AppError> {
+        let mut rd = match tokio::fs::read_dir(&self.root).await {
+            Ok(rd) => rd,
+            Err(_) => return Ok(vec![]),
+        };
+        let mut out: Vec<(String, BucketMeta)> = Vec::new();
+        while let Some(e) = rd.next_entry().await.map_err(AppError::Internal)? {
+            if !e.file_type().await.map_err(AppError::Internal)?.is_dir() {
+                continue;
+            }
+            let name = e.file_name();
+            let name = name.to_string_lossy().to_string();
+            if name == ".objects" {
+                continue;
+            }
+            if let Ok(bm) = self.get_bucket(&name).await {
+                out.push((name, bm));
+            }
+        }
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(out)
+    }
+
     /// 버킷 서브트리를 재귀 순회하며 `*.meta.json`을 수집(중첩 키 포함).
     /// `.bucket.json`/temp 제외, 포인터-깨진(blob 부재) 객체 제외. 키 정렬 반환.
     /// (발견 P2-1: 비재귀 스캔은 중첩 키 객체를 누락하므로 반드시 재귀)
@@ -455,6 +479,37 @@ mod tests {
         let listed = s.list("b").await.unwrap();
         let keys: Vec<&str> = listed.iter().map(|(k, _)| k.as_str()).collect();
         assert_eq!(keys, vec!["dir/sub/nested.zip", "top.txt"]); // 정렬·broken 제외
+    }
+
+    #[tokio::test]
+    async fn list_buckets_returns_those_with_bucket_json() {
+        let (s, _d) = store();
+        s.put_bucket(
+            "pub1",
+            &crate::meta::BucketMeta {
+                visibility: crate::meta::Visibility::Public,
+                owner: "o".into(),
+                created_at: crate::clock::now_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+        s.put_bucket(
+            "int1",
+            &crate::meta::BucketMeta {
+                visibility: crate::meta::Visibility::Internal,
+                owner: "o".into(),
+                created_at: crate::clock::now_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+        // .bucket.json 없는 디렉터리(객체만)는 목록 제외
+        s.put("orphan", "k", "x", "u", b"x".to_vec()).await.unwrap();
+
+        let buckets = s.list_buckets().await.unwrap();
+        let names: Vec<&str> = buckets.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, vec!["int1", "pub1"]); // 정렬·.bucket.json 보유만
     }
 
     #[tokio::test]

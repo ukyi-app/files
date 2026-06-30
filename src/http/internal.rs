@@ -1,21 +1,28 @@
 use super::ranged::build_ranged;
 use super::{AppState, AuthKey};
+use crate::capacity::free_bytes;
 use crate::error::AppError;
+use crate::meta::{BucketMeta, ObjectMeta, Visibility};
 use axum::body::Body;
 use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::put;
+use axum::routing::{get, put};
 use axum::{Json, Router};
 use std::time::Duration;
 
-/// 내부 API 라우터(인증 필요). 파일 CRUD.
+/// 내부 API 라우터(파일 CRUD + 버킷 + 헬스). 헬스 외 라우트는 인증 필요.
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route(
             "/api/files/{bucket}/{*key}",
             put(put_file).get(get_file).head(head_file).delete(delete_file),
         )
+        .route("/api/files/{bucket}", get(list_files))
+        .route("/api/buckets/{bucket}", put(put_bucket))
+        .route("/api/buckets", get(get_buckets))
+        .route("/healthz", get(healthz))
+        .route("/readyz", get(readyz))
         .with_state(state)
 }
 
@@ -106,6 +113,95 @@ async fn delete_file(
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
+#[derive(serde::Deserialize)]
+struct CreateBucket {
+    visibility: Visibility,
+}
+
+async fn put_bucket(
+    State(st): State<AppState>,
+    AuthKey(key): AuthKey,
+    Path(bucket): Path<String>,
+    Json(body): Json<CreateBucket>,
+) -> Result<Response, AppError> {
+    if !key.admin {
+        return Err(AppError::Forbidden);
+    }
+    let bm = BucketMeta {
+        visibility: body.visibility,
+        owner: key.service.clone(),
+        created_at: crate::clock::now_rfc3339(),
+    };
+    st.store.put_bucket(&bucket, &bm).await?;
+    Ok((StatusCode::CREATED, Json(bm)).into_response())
+}
+
+#[derive(serde::Serialize)]
+struct BucketEntry {
+    bucket: String,
+    #[serde(flatten)]
+    meta: BucketMeta,
+}
+
+async fn get_buckets(State(st): State<AppState>, AuthKey(key): AuthKey) -> Result<Response, AppError> {
+    if !key.admin {
+        return Err(AppError::Forbidden);
+    }
+    let entries: Vec<BucketEntry> = st
+        .store
+        .list_buckets()
+        .await?
+        .into_iter()
+        .map(|(bucket, meta)| BucketEntry { bucket, meta })
+        .collect();
+    Ok(Json(entries).into_response())
+}
+
+#[derive(serde::Serialize)]
+struct ObjectEntry {
+    key: String,
+    #[serde(flatten)]
+    meta: ObjectMeta,
+}
+
+async fn list_files(
+    State(st): State<AppState>,
+    AuthKey(key): AuthKey,
+    Path(bucket): Path<String>,
+) -> Result<Response, AppError> {
+    if !key.can_read(&bucket) {
+        return Err(AppError::Forbidden);
+    }
+    let entries: Vec<ObjectEntry> = st
+        .store
+        .list(&bucket)
+        .await?
+        .into_iter()
+        .map(|(key, meta)| ObjectEntry { key, meta })
+        .collect();
+    Ok(Json(entries).into_response())
+}
+
+async fn healthz() -> StatusCode {
+    StatusCode::OK
+}
+
+/// `/data` 쓰기 가능 + free-space ≥ min_free 확인.
+async fn readyz(State(st): State<AppState>) -> StatusCode {
+    let dir = &st.cfg.data_dir;
+    let probe = dir.join(".readyz-probe");
+    let writable = tokio::fs::write(&probe, b"ok").await.is_ok();
+    let _ = tokio::fs::remove_file(&probe).await;
+    let free_ok = free_bytes(dir)
+        .map(|f| f >= st.cfg.min_free_bytes)
+        .unwrap_or(false);
+    if writable && free_ok {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,8 +219,7 @@ mod tests {
         hex::encode(Sha256::digest(s.as_bytes()))
     }
 
-    fn test_app() -> (Router, tempfile::TempDir) {
-        let d = tempfile::tempdir().unwrap();
+    fn state_with_data_dir(data_dir: &str) -> AppState {
         let writer = ApiKey {
             id: "w".into(),
             sha256: sha("writer"),
@@ -141,18 +236,33 @@ mod tests {
             read_buckets: vec!["skills".into()],
             admin: false,
         };
-        let cfg = Config::from_env(|k| match k {
-            "FILES_DATA_DIR" => Some("/tmp".into()),
+        let admin = ApiKey {
+            id: "a".into(),
+            sha256: sha("admin"),
+            service: "ops".into(),
+            write_buckets: vec![],
+            read_buckets: vec![],
+            admin: true,
+        };
+        let dd = data_dir.to_string();
+        let cfg = Config::from_env(move |k| match k {
+            "FILES_DATA_DIR" => Some(dd.clone()),
             "FILES_KEYS_PATH" => Some("/tmp/keys.json".into()),
+            "FILES_MIN_FREE_BYTES" => Some("0".into()),
             _ => None,
         })
         .unwrap();
-        let state = AppState {
-            store: Store::new(d.path().to_path_buf()),
-            keys: Arc::new(KeyRegistry::from_keys(vec![writer, reader])),
+        AppState {
+            store: Store::new(std::path::PathBuf::from(data_dir)),
+            keys: Arc::new(KeyRegistry::from_keys(vec![writer, reader, admin])),
             cap: Capacity::with_free_fn(0, || Ok(u64::MAX)),
             cfg: Arc::new(cfg),
-        };
+        }
+    }
+
+    fn test_app() -> (Router, tempfile::TempDir) {
+        let d = tempfile::tempdir().unwrap();
+        let state = state_with_data_dir(&d.path().to_string_lossy());
         (router(state), d)
     }
 
@@ -166,11 +276,109 @@ mod tests {
             .unwrap()
     }
 
+    fn req_json(method: &str, uri: &str, token: &str, json: &str) -> Request<Body> {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(json.to_string()))
+            .unwrap()
+    }
+
+    fn req_get(uri: &str, token: &str) -> Request<Body> {
+        Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    fn req_plain(uri: &str) -> Request<Body> {
+        Request::builder().uri(uri).body(Body::empty()).unwrap()
+    }
+
     async fn body_bytes(resp: axum::response::Response) -> Vec<u8> {
         axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap()
             .to_vec()
+    }
+
+    #[tokio::test]
+    async fn create_bucket_admin_then_list() {
+        let (app, _d) = test_app();
+        let res = app
+            .clone()
+            .oneshot(req_json("PUT", "/api/buckets/photos", "admin", r#"{"visibility":"public"}"#))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED);
+        let res = app.oneshot(req_get("/api/buckets", "admin")).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let s = String::from_utf8(body_bytes(res).await).unwrap();
+        assert!(s.contains("\"photos\""), "buckets list: {s}");
+        assert!(s.contains("\"public\""));
+    }
+
+    #[tokio::test]
+    async fn create_bucket_non_admin_403() {
+        let (app, _d) = test_app();
+        let res = app
+            .oneshot(req_json("PUT", "/api/buckets/photos", "writer", r#"{"visibility":"public"}"#))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn create_reserved_bucket_400() {
+        let (app, _d) = test_app();
+        let res = app
+            .oneshot(req_json("PUT", "/api/buckets/api", "admin", r#"{"visibility":"public"}"#))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn list_files_returns_entries() {
+        let (app, _d) = test_app();
+        app.clone()
+            .oneshot(req("PUT", "/api/files/skills/one.txt", "writer", "a"))
+            .await
+            .unwrap();
+        app.clone()
+            .oneshot(req("PUT", "/api/files/skills/two.txt", "writer", "bb"))
+            .await
+            .unwrap();
+        let res = app.oneshot(req_get("/api/files/skills", "reader")).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let s = String::from_utf8(body_bytes(res).await).unwrap();
+        assert!(s.contains("one.txt") && s.contains("two.txt"), "list: {s}");
+        assert!(s.contains("contentType")); // camelCase flatten
+    }
+
+    #[tokio::test]
+    async fn healthz_ok() {
+        let (app, _d) = test_app();
+        let res = app.oneshot(req_plain("/healthz")).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn readyz_ok_when_writable() {
+        let (app, _d) = test_app();
+        let res = app.oneshot(req_plain("/readyz")).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn readyz_503_when_unwritable() {
+        let app = router(state_with_data_dir("/nonexistent-files-data-xyz/sub"));
+        let res = app.oneshot(req_plain("/readyz")).await.unwrap();
+        assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[tokio::test]
