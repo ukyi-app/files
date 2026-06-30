@@ -22,6 +22,10 @@ pub struct KeyRegistry {
 }
 
 impl KeyRegistry {
+    pub fn from_keys(keys: Vec<ApiKey>) -> Self {
+        Self { keys }
+    }
+
     pub fn load(path: &std::path::Path) -> std::io::Result<Self> {
         let keys = serde_json::from_slice(&std::fs::read(path)?)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
