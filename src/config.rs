@@ -43,6 +43,17 @@ impl Config {
                 .unwrap_or_else(|| "https://files.ukyi.app".into()),
         })
     }
+
+    /// 기동 불변식: 업로드 타임아웃이 GC grace보다 작아야 stall 업로드가 grace 내 종료된다.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.upload_timeout_secs >= self.gc_grace_secs {
+            return Err(format!(
+                "FILES_UPLOAD_TIMEOUT({}) must be < FILES_GC_GRACE({})",
+                self.upload_timeout_secs, self.gc_grace_secs
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -66,5 +77,22 @@ mod tests {
     #[test]
     fn missing_required_errors() {
         assert!(Config::from_env(|_| None).is_err());
+    }
+
+    #[test]
+    fn validate_requires_upload_timeout_below_grace() {
+        let mk = |to: &str, grace: &str| {
+            Config::from_env(|k| match k {
+                "FILES_DATA_DIR" => Some("/d".into()),
+                "FILES_KEYS_PATH" => Some("/k".into()),
+                "FILES_UPLOAD_TIMEOUT" => Some(to.into()),
+                "FILES_GC_GRACE" => Some(grace.into()),
+                _ => None,
+            })
+            .unwrap()
+        };
+        assert!(mk("600", "3600").validate().is_ok());
+        assert!(mk("3600", "3600").validate().is_err()); // 같으면 위반
+        assert!(mk("4000", "3600").validate().is_err());
     }
 }

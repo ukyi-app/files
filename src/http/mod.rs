@@ -23,6 +23,20 @@ pub struct AppState {
     pub cfg: Arc<Config>,
 }
 
+/// Config로부터 AppState 구성 — data_dir/.objects 생성, keys 로드, Store/Capacity 결선.
+pub fn build_state(cfg: Config) -> std::io::Result<AppState> {
+    std::fs::create_dir_all(cfg.data_dir.join(".objects"))?;
+    let keys = KeyRegistry::load(&cfg.keys_path)?;
+    let store = Store::new(cfg.data_dir.clone());
+    let cap = Capacity::new(cfg.data_dir.clone(), cfg.min_free_bytes);
+    Ok(AppState {
+        store,
+        keys: Arc::new(keys),
+        cap,
+        cfg: Arc::new(cfg),
+    })
+}
+
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let status =
@@ -124,6 +138,22 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         assert_eq!(status_of(req).await, StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn build_state_creates_objects_dir_and_loads_keys() {
+        let d = tempfile::tempdir().unwrap();
+        let keys_path = d.path().join("keys.json");
+        std::fs::write(&keys_path, r#"[{"id":"k","sha256":"00","service":"s"}]"#).unwrap();
+        let data_dir = d.path().join("data");
+        let cfg = Config::from_env(|k| match k {
+            "FILES_DATA_DIR" => Some(data_dir.to_string_lossy().to_string()),
+            "FILES_KEYS_PATH" => Some(keys_path.to_string_lossy().to_string()),
+            _ => None,
+        })
+        .unwrap();
+        let _state = build_state(cfg).unwrap();
+        assert!(data_dir.join(".objects").is_dir());
     }
 
     #[tokio::test]
