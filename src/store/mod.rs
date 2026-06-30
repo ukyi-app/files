@@ -1,5 +1,6 @@
 pub mod atomic;
 pub mod locks;
+pub mod reconcile;
 
 use crate::error::AppError;
 use crate::meta::{BucketMeta, ObjectMeta};
