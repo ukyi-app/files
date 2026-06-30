@@ -22,7 +22,7 @@ futures = "0.3"
 bytes = "1"
 nix = { version = "0.29", features = ["fs"] }
 mime_guess = "2"
-time = { version = "0.3", features = ["formatting"] }
+time = { version = "0.3", features = ["formatting", "parsing"] }
 
 [dev-dependencies]
 tempfile = "3"

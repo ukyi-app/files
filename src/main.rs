@@ -1,3 +1,4 @@
+mod clock;
 mod config;
 mod error;
 mod meta;
