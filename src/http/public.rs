@@ -194,6 +194,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn no_method_reaches_api_surface_on_public() {
+        let (app, _d) = pub_app().await;
+        for (method, uri) in [
+            ("PUT", "/api/files/downloads/x.txt"),
+            ("DELETE", "/api/files/downloads/file.txt"),
+            ("POST", "/api/buckets/downloads"),
+            ("GET", "/api/buckets"),
+            ("GET", "/api/files/downloads"),
+        ] {
+            let req = Request::builder()
+                .method(method)
+                .uri(uri)
+                .body(Body::empty())
+                .unwrap();
+            let res = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(
+                res.status(),
+                StatusCode::NOT_FOUND,
+                "{method} {uri}는 공개 표면에서 404여야 함"
+            );
+        }
+        // 쓰기가 도달하지 않았음을 확인: 기존 객체 그대로
+        let res = app.oneshot(get("/downloads/file.txt")).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(body_str(res).await, "public data");
+    }
+
+    #[tokio::test]
+    async fn reserved_bucket_names_cannot_be_created() {
+        let d = tempfile::tempdir().unwrap();
+        let store = Store::new(d.path().to_path_buf());
+        for reserved in ["api", "healthz", "readyz"] {
+            let r = store
+                .put_bucket(
+                    reserved,
+                    &BucketMeta {
+                        visibility: Visibility::Public,
+                        owner: "o".into(),
+                        created_at: crate::clock::now_rfc3339(),
+                    },
+                )
+                .await;
+            assert!(
+                matches!(r, Err(crate::error::AppError::BadRequest(_))),
+                "{reserved}는 예약되어 생성 거부되어야 함"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn catalog_lists_public_only() {
         let (app, _d) = pub_app().await;
         let res = app.oneshot(get("/")).await.unwrap();
