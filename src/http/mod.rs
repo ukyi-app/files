@@ -1,3 +1,4 @@
+pub mod internal;
 pub mod ranged;
 
 use crate::auth::{ApiKey, KeyRegistry};
