@@ -1,0 +1,18 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "clients/**"
+      - "docs/**"
+      - "**/*.md"
+  workflow_dispatch:
+
+jobs:
+  build:
+    # homelab 공용 reusable 빌드(GHCR push). page/trip-mate 등과 동일 패턴.
+    uses: ukyi-app/homelab/.github/workflows/reusable-app-build.yaml@main
+    with:
+      app: files
+    secrets: inherit
