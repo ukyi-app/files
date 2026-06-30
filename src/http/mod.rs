@@ -1,3 +1,5 @@
+pub mod ranged;
+
 use crate::auth::{ApiKey, KeyRegistry};
 use crate::capacity::Capacity;
 use crate::config::Config;
