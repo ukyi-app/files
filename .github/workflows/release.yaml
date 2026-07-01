@@ -9,10 +9,15 @@ on:
       - "**/*.md"
   workflow_dispatch:
 
+# reusable-app-build이 GHCR push를 위해 packages:write를 요구 — org 기본이 read라 caller가
+# 명시하지 않으면 권한 초과로 startup_failure가 된다(page 패턴과 동일).
+permissions:
+  contents: read
+  packages: write
+
 jobs:
   build:
     # homelab 공용 reusable 빌드(GHCR push). page/trip-mate 등과 동일 패턴.
     uses: ukyi-app/homelab/.github/workflows/reusable-app-build.yaml@main
     with:
       app: files
-    secrets: inherit
