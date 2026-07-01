@@ -80,7 +80,7 @@ async fn public_listener_isolates_api_and_internal_buckets() {
 
     // writer: 객체
     let r = c
-        .put(format!("{}/api/files/downloads/pub.txt", h.internal))
+        .put(format!("{}/api/files/downloads/object?key=pub.txt", h.internal))
         .header("authorization", "Bearer writer")
         .body("hello")
         .send()
@@ -88,7 +88,7 @@ async fn public_listener_isolates_api_and_internal_buckets() {
         .unwrap();
     assert_eq!(r.status(), 201);
     let r = c
-        .put(format!("{}/api/files/secret/hid.txt", h.internal))
+        .put(format!("{}/api/files/secret/object?key=hid.txt", h.internal))
         .header("authorization", "Bearer writer")
         .body("classified")
         .send()
@@ -102,10 +102,10 @@ async fn public_listener_isolates_api_and_internal_buckets() {
     assert_eq!(r.text().await.unwrap(), "hello");
 
     // 공개: /api GET/PUT → 404(표면 분리)
-    let r = c.get(format!("{}/api/files/downloads/pub.txt", h.public)).send().await.unwrap();
+    let r = c.get(format!("{}/api/files/downloads/object?key=pub.txt", h.public)).send().await.unwrap();
     assert_eq!(r.status(), 404);
     let r = c
-        .put(format!("{}/api/files/downloads/x.txt", h.public))
+        .put(format!("{}/api/files/downloads/object?key=x.txt", h.public))
         .body("nope")
         .send()
         .await
@@ -118,7 +118,7 @@ async fn public_listener_isolates_api_and_internal_buckets() {
 
     // internal 리스너: 정상 다운로드
     let r = c
-        .get(format!("{}/api/files/secret/hid.txt", h.internal))
+        .get(format!("{}/api/files/secret/object?key=hid.txt", h.internal))
         .header("authorization", "Bearer writer")
         .send()
         .await
@@ -143,7 +143,7 @@ async fn large_object_streaming_put_and_range_download() {
     let size = 8 * 1024 * 1024usize;
     let data: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
     let r = c
-        .put(format!("{}/api/files/downloads/big.bin", h.internal))
+        .put(format!("{}/api/files/downloads/object?key=big.bin", h.internal))
         .header("authorization", "Bearer writer")
         .body(data.clone())
         .send()

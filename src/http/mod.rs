@@ -1,4 +1,5 @@
 pub mod internal;
+pub mod openapi;
 pub mod public;
 pub mod ranged;
 

@@ -32,6 +32,7 @@ fn escape(s: &str) -> String {
         .replace('\'', "&#39;")
 }
 
+// 공개 다운로드는 별도 origin(:8081)의 단순 GET — OpenAPI 스펙(내부 전용) 밖.
 async fn public_download(
     State(st): State<AppState>,
     Path((bucket, key)): Path<(String, String)>,

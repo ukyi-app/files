@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// 키의 커밋 포인터. on-disk `<key>.meta.json`(camelCase)이자 API 응답 본문.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ObjectMeta {
     pub content_type: String,
@@ -11,7 +11,7 @@ pub struct ObjectMeta {
     pub uploaded_by: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Visibility {
     Public,
@@ -19,7 +19,7 @@ pub enum Visibility {
 }
 
 /// 버킷 메타. on-disk `<bucket>/.bucket.json`(camelCase).
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct BucketMeta {
     pub visibility: Visibility,

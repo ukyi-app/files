@@ -164,7 +164,7 @@ async fn upload_rejected_507_no_temp_residue_existing_intact() {
     let app = http::internal::router(state.clone());
     let req = Request::builder()
         .method("PUT")
-        .uri("/api/files/skills/new.txt")
+        .uri("/api/files/skills/object?key=new.txt")
         .header(header::AUTHORIZATION, "Bearer writer")
         .header(header::CONTENT_TYPE, "text/plain")
         .body(Body::from("blocked"))
@@ -182,5 +182,225 @@ async fn upload_rejected_507_no_temp_residue_existing_intact() {
     while let Some(e) = rd.next_entry().await.unwrap() {
         let n = e.file_name();
         assert!(!n.to_string_lossy().starts_with(".tmp-"), "temp 잔재 발견");
+    }
+}
+
+// ── codex pass5: 쿼리-키 디코딩/검증 계약 + 인증 읽기 캐시 헤더 ──────────────────
+
+/// skills 읽기·쓰기 가능한 writer 키 + 수용 용량의 정상 상태.
+fn normal_state(data_dir: std::path::PathBuf) -> AppState {
+    let writer = ApiKey {
+        id: "w".into(),
+        sha256: hex_sha(b"writer"),
+        service: "page".into(),
+        write_buckets: vec!["skills".into()],
+        read_buckets: vec!["skills".into()],
+        admin: false,
+    };
+    let dd = data_dir.to_string_lossy().to_string();
+    let cfg = Config::from_env(move |k| match k {
+        "FILES_DATA_DIR" => Some(dd.clone()),
+        "FILES_KEYS_PATH" => Some("/tmp/keys.json".into()),
+        _ => None,
+    })
+    .unwrap();
+    AppState {
+        store: Store::new(data_dir),
+        keys: Arc::new(KeyRegistry::from_keys(vec![writer])),
+        cap: Capacity::with_free_fn(0, || Ok(u64::MAX)),
+        cfg: Arc::new(cfg),
+    }
+}
+
+fn writer_req(method: &str, uri: &str) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(header::AUTHORIZATION, "Bearer writer")
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .body(Body::from("payload"))
+        .unwrap()
+}
+
+/// finding2: SDK 제거로 URL 구성이 소비자에게 넘어갔으므로, 쿼리-키 디코딩/검증이 정확한
+/// 계약이어야 한다(모호·위험 입력은 하드-투-디버그 400이 아니라 명확한 400·정합 동작).
+#[tokio::test]
+async fn query_key_decoding_and_validation_contract() {
+    let d = tempfile::tempdir().unwrap();
+    let app = http::internal::router(normal_state(d.path().to_path_buf()));
+
+    // 원시 슬래시로 중첩 키 생성
+    let res = app
+        .clone()
+        .oneshot(writer_req("PUT", "/api/files/skills/object?key=dir/a.txt"))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::CREATED, "원시 슬래시 중첩 키 PUT");
+
+    // 인코딩된 슬래시(%2F)는 동일 객체를 가리켜야(서버가 디코드 → a/b 와 a%2Fb 동일)
+    let res = app
+        .clone()
+        .oneshot(writer_req("GET", "/api/files/skills/object?key=dir%2Fa.txt"))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK, "%2F는 동일 객체를 가리켜야");
+
+    // 이중 인코딩(%252F)은 리터럴 '%'가 되어 세그먼트 문법 위반 → 400
+    let res = app
+        .clone()
+        .oneshot(writer_req("GET", "/api/files/skills/object?key=dir%252Fa.txt"))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST, "이중 인코딩은 400");
+
+    // 빈 키 → 400
+    let res = app
+        .clone()
+        .oneshot(writer_req("GET", "/api/files/skills/object?key="))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST, "빈 키는 400");
+
+    // 중복 key 파라미터 → 모호 → 400(추출 거부)
+    let res = app
+        .clone()
+        .oneshot(writer_req("GET", "/api/files/skills/object?key=a.txt&key=b.txt"))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST, "중복 key는 400");
+
+    // 과길이 키(>1024) → 400
+    let long = "a".repeat(1025);
+    let res = app
+        .clone()
+        .oneshot(writer_req("GET", &format!("/api/files/skills/object?key={long}")))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST, "과길이 키는 400");
+
+    // traversal(a/../b) → 세그먼트 '..' → 400
+    let res = app
+        .oneshot(writer_req("GET", "/api/files/skills/object?key=a/../b"))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST, "traversal 키는 400");
+}
+
+/// finding3: 인증된 내부 객체 읽기(GET·HEAD)는 no-store/private + Vary:Authorization 이어야
+/// 프록시의 쿼리-무시 캐시 오배달·접근 로그 키 노출을 막는다.
+#[tokio::test]
+async fn internal_object_reads_are_no_store_and_vary_authorization() {
+    let d = tempfile::tempdir().unwrap();
+    let app = http::internal::router(normal_state(d.path().to_path_buf()));
+    let res = app
+        .clone()
+        .oneshot(writer_req("PUT", "/api/files/skills/object?key=c.bin"))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::CREATED);
+
+    for method in ["GET", "HEAD"] {
+        let res = app
+            .clone()
+            .oneshot(writer_req(method, "/api/files/skills/object?key=c.bin"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "{method} 200");
+        assert_eq!(
+            res.headers().get(header::CACHE_CONTROL).and_then(|v| v.to_str().ok()),
+            Some("no-store, private"),
+            "{method} Cache-Control"
+        );
+        assert_eq!(
+            res.headers().get(header::VARY).and_then(|v| v.to_str().ok()),
+            Some("Authorization"),
+            "{method} Vary"
+        );
+    }
+}
+
+/// finding1(실응답↔계약 대조): 다운로드 응답 Content-Type은 저장된 타입(octet-stream 고정 아님)이며
+/// 200·206 모두 캐시/Range 헤더를 실제로 내보낸다 — 스펙 `*/*` 문서화의 근거.
+#[tokio::test]
+async fn download_content_type_is_stored_type_and_206_has_all_headers() {
+    let d = tempfile::tempdir().unwrap();
+    let app = http::internal::router(normal_state(d.path().to_path_buf()));
+    // text/plain 으로 업로드(octet-stream 아님)
+    let put = Request::builder()
+        .method("PUT")
+        .uri("/api/files/skills/object?key=note.txt")
+        .header(header::AUTHORIZATION, "Bearer writer")
+        .header(header::CONTENT_TYPE, "text/plain")
+        .body(Body::from("hello world"))
+        .unwrap();
+    assert_eq!(app.clone().oneshot(put).await.unwrap().status(), StatusCode::CREATED);
+
+    // 전체 GET(200): Content-Type = 저장 타입 + no-store/Vary + ETag
+    let res = app
+        .clone()
+        .oneshot(writer_req("GET", "/api/files/skills/object?key=note.txt"))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(
+        res.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()),
+        Some("text/plain"),
+        "다운로드 Content-Type은 저장 타입이어야(octet-stream 고정 아님)"
+    );
+    assert_eq!(
+        res.headers().get(header::CACHE_CONTROL).and_then(|v| v.to_str().ok()),
+        Some("no-store, private")
+    );
+    assert_eq!(
+        res.headers().get(header::VARY).and_then(|v| v.to_str().ok()),
+        Some("Authorization")
+    );
+    assert!(res.headers().get(header::ETAG).is_some(), "200 ETag");
+
+    // Range GET(206): Content-Type=저장 타입 + Content-Range + Last-Modified + 캐시 헤더(스펙과 정합)
+    let ranged = Request::builder()
+        .method("GET")
+        .uri("/api/files/skills/object?key=note.txt")
+        .header(header::AUTHORIZATION, "Bearer writer")
+        .header(header::RANGE, "bytes=0-4")
+        .body(Body::empty())
+        .unwrap();
+    let res = app.oneshot(ranged).await.unwrap();
+    assert_eq!(res.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        res.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()),
+        Some("text/plain"),
+        "206 Content-Type도 저장 타입"
+    );
+    assert_eq!(
+        res.headers().get(header::CONTENT_RANGE).and_then(|v| v.to_str().ok()),
+        Some("bytes 0-4/11")
+    );
+    assert!(res.headers().get(header::LAST_MODIFIED).is_some(), "206 Last-Modified");
+    assert_eq!(
+        res.headers().get(header::CACHE_CONTROL).and_then(|v| v.to_str().ok()),
+        Some("no-store, private"),
+        "206도 캐시 헤더"
+    );
+    assert_eq!(
+        res.headers().get(header::VARY).and_then(|v| v.to_str().ok()),
+        Some("Authorization")
+    );
+}
+
+/// finding2: 스펙 pattern은 세그먼트 문법만 모델링(예약 접미사 못 거름). 서버 valid_key가 진실원임을
+/// 증명 — 생성 검증기가 통과시켜도 런타임이 400으로 거부한다(lookahead 미채택의 안전망).
+#[tokio::test]
+async fn reserved_suffix_keys_rejected_at_runtime() {
+    let d = tempfile::tempdir().unwrap();
+    let app = http::internal::router(normal_state(d.path().to_path_buf()));
+    for key in ["foo.meta.json", "x/foo.bucket.json"] {
+        let uri = format!("/api/files/skills/object?key={key}");
+        let res = app.clone().oneshot(writer_req("PUT", &uri)).await.unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST, "예약 접미사 {key}는 런타임 400");
+        // 상태뿐 아니라 에러 body 코드까지 계약대로(reserved_suffix) 잠금
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let j: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(j["error"].as_str(), Some("reserved_suffix"), "{key} 에러 코드: {j}");
     }
 }
