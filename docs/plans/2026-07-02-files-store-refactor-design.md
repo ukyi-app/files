@@ -31,12 +31,22 @@
 
 | 결정 | 선택 | 근거 |
 |---|---|---|
-| 스코프 | **중간**: 순수 분할 + C2 utoipa 라인 압축 + `http/mod.rs` 해체 | 파일 크기 문제를 확실히 해소하되 구조/의존성 변경(C3)·행위 변경은 제외 |
+| 스코프 | **구조 분할만**: store/internal/`http/mod.rs` 분할 + tests/common. **C2 utoipa 압축·C3·행위 변경 제외** | 아래 "C2 제외 근거" 참조 — C2는 스펙 바이트 불변과 충돌 |
 | DTO 배치 | **리소스 파일이 소유**(colocated) | 핸들러+DTO+라우트를 리소스 단위로 자기완결; axum 관용 |
-| 공유 utoipa 타입 | `http/openapi.rs`에 배치(ErrorResponse + C2 헬퍼) | 여러 리소스가 공유; OpenAPI-doc 관심사 응집 |
-| `openapi.rs` 위치 | **`http/` 레벨 유지**(internal/로 이동 안 함) | 67줄로 이미 깔끔 + `tests/{openapi,contract}.rs` 경로 churn 회피 |
-| tests/common | **이번에 포함** | 4개 통합 테스트의 헬퍼 복붙(hex_sha·AppState 빌더·요청 빌더) 제거 |
+| 공유 utoipa 타입 | `http/openapi.rs` 유지(ErrorResponse·ApiDoc·SecurityAddon) | 위치 불변; paths/schemas 경로만 갱신 |
+| `openapi.rs` 위치 | **`http/` 레벨 유지**(internal/로 이동 안 함) | 67줄로 이미 깔끔 + `tests/{openapi,contract}.rs`가 `files::http::openapi::ApiDoc` 직접 참조 → 이동 시 컴파일 깨짐 |
+| tests/common | **이번에 포함**(정밀 스코프) | 진짜 동일 헬퍼만: `hex_sha`·`body_json`·`internal_app(keys)`·`bearer`. adversarial의 in-memory 상태 빌더·e2e의 실-리스너 Harness는 유지(과통합 금지) |
 | repository trait/레이어 | **도입 금지(YAGNI)** | `Store` 구현 1개·제네릭 호출 0·테스트가 실제 tempdir 사용(목킹 불요); 이 규모는 크레이트 분할 임계 이하 |
+
+### C2 제외 근거 (writing-plans 준비 중 utoipa 5.5 검증으로 발견)
+
+docs.rs 5.5.0 + utoipa-gen 스냅샷 + 실제 `tests/openapi.rs` 대조 결과, C2 3종 중 헤드라인 이득이 스펙 바이트 불변과 충돌:
+- **401 dedup**(`IntoResponses`): 안전(7핸들러 설명 균일).
+- **403 dedup**: 불가 — 설명이 엔드포인트별로 다름(`쓰기/읽기 스코프 없음`·`admin 아님`·`""`) → 단일 재사용 타입이 바이트·정보 손실.
+- **`ObjectHeaders`**(`ToResponse`, get_file 42→7줄의 핵심): 불가 — GET200/206/HEAD200 헤더셋이 전부 달라 하나로 못 맞춤(바이트 일치엔 3 struct=DRY 무의미), 바이너리 바디 미검증, `response = X`(non-inline)는 `$ref`를 내보내 `tests/openapi.rs`가 깨짐.
+- **`BucketPath`**(`IntoParams`): put_file만 `description="버킷명"` → 6곳 중 일부 스펙 설명 델타.
+
+→ 바이트 안전하게 남는 건 401 dedup(미미)뿐이라 **C2 전체를 이번 리팩터에서 제외**. utoipa 압축은 스펙 설명 변경을 의도적으로 결정할 수 있는 별도 과제로 미룸. 구조 분할은 100% 바이트 안전하며 "한 파일에 너무 많은 코드" 문제를 그대로 해결한다.
 
 ## 아키텍처 / 타깃 파일 맵
 
@@ -82,7 +92,7 @@ src/http/
   state.rs    AppState struct + build_state()          (+ 이동된 build_state 테스트)
   extract.rs  AuthKey (FromRequestParts)               (+ 이동된 인증 401/200 테스트)
   response.rs impl IntoResponse for AppError
-  openapi.rs  ApiDoc · ErrorResponse · SecurityAddon + C2 공유 타입(AuthErrors·ObjectHeaders·BucketPath); paths/schemas 경로 갱신
+  openapi.rs  ApiDoc · ErrorResponse · SecurityAddon (위치 불변); paths/schemas 경로만 갱신
   public.rs / ranged.rs   (그대로)
 ```
 
@@ -96,17 +106,9 @@ tests/common/mod.rs   hex_sha · AppState 빌더(normal / rejecting-capacity) ·
 tests/{adversarial,e2e,contract,openapi}.rs   `mod common;` 으로 공유
 ```
 
-## C2 — utoipa 애노테이션 압축
+## utoipa 애노테이션 압축(C2) — 제외
 
-`#[utoipa::path]`는 물리적으로 뗄 수 없으므로 **재사용 타입**으로 반복 애노테이션을 축약(모두 `http/openapi.rs`에 공유):
-
-- **`AuthErrors`** (`#[derive(IntoResponses)]`, 401·403) — 7개 핸들러의 반복 인증 에러 튜플 대체. 엔드포인트별 400/404/413/507은 잔류(과문서화 회피 — 예: GET에 507 문서화 금지).
-- **`ObjectHeaders`** (`#[derive(ToResponse)]`) — `get_file` 200/206 + `head_file` 200이 3중 중복하는 ETag/Accept-Ranges/Content-Length/Content-Type/Cache-Control/Vary 참조화. `Content-Range`(206/416)만 상태별 잔류.
-- **`BucketPath`** (`#[derive(IntoParams)]`) — 6곳 반복 `("bucket" = String, Path)` 통일(`KeyQuery`가 이미 모범).
-
-효과: `get_file` 애노테이션 ~42줄 → ~7줄.
-
-> **정직성 노트(계획 단계 검증 대상)**: utoipa 5.5의 `ToResponse` 헤더 재사용·`IntoResponses` 표기의 정확한 문법은 writing-plans의 TDD 단계에서 실제 컴파일 + `tests/contract.rs`·`tests/openapi.rs`로 검증한다. **어떤 축약이 OpenAPI 스펙 바이트를 바꾸면(=행위 변경) 그 항목은 되돌리고 기존 튜플을 유지한다 — 스펙 불변이 C2보다 우선.**
+위 "C2 제외 근거" 참조. `internal.rs` 분할 시 `#[utoipa::path]` 애노테이션은 **핸들러와 함께 그대로 이동**하며(축약 없음), 스펙 바이트는 완전히 불변으로 유지된다. utoipa 재사용 타입 도입은 별도 과제로 미룬다.
 
 ## 강결합·churn 처리 (리스크 핵심)
 
@@ -121,9 +123,8 @@ tests/{adversarial,e2e,contract,openapi}.rs   `mod common;` 으로 공유
 1. `test`: 베이스라인 초록 확인(안전망 고정). — 이미 91 passed 확인.
 2. `refactor(store)`: `mod.rs` → objects/buckets/listing + `store/tests.rs`.
 3. `refactor(http)`: `internal.rs` → `internal/{mod,files,buckets,health}` + `internal/tests.rs` + **openapi.rs paths/schemas 갱신**.
-4. `refactor(http)`: C2 utoipa 압축(AuthErrors/ObjectHeaders/BucketPath).
-5. `refactor(http)`: `http/mod.rs` 해체(state/extract/response + facade).
-6. `test`: `tests/common/mod.rs` 추출 + 4파일 공유.
+4. `refactor(http)`: `http/mod.rs` 해체(state/extract/response + facade).
+5. `test`: `tests/common/mod.rs` 추출 + 4파일 공유.
 
 각 단계가 독립 커밋 → 문제 시 해당 커밋만 revert. 스펙/계약 테스트 실패 시 즉시 중단.
 
