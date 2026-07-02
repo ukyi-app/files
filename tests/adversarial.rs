@@ -211,13 +211,7 @@ fn normal_state(data_dir: std::path::PathBuf) -> AppState {
 }
 
 fn writer_req(method: &str, uri: &str) -> Request<Body> {
-    Request::builder()
-        .method(method)
-        .uri(uri)
-        .header(header::AUTHORIZATION, "Bearer writer")
-        .header(header::CONTENT_TYPE, "application/octet-stream")
-        .body(Body::from("payload"))
-        .unwrap()
+    common::bearer(method, uri, "writer", "application/octet-stream", "payload")
 }
 
 /// finding2: SDK 제거로 URL 구성이 소비자에게 넘어갔으므로, 쿼리-키 디코딩/검증이 정확한
