@@ -7,15 +7,13 @@ use files::capacity::Capacity;
 use files::config::Config;
 use files::http::{self, AppState};
 use files::store::{reconcile, Store};
-use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tower::ServiceExt;
 
-fn hex_sha(b: &[u8]) -> String {
-    hex::encode(Sha256::digest(b))
-}
+mod common;
+use common::hex_sha;
 
 // ── M13.1: 동시 PUT/DELETE + 같은-size 덮어쓰기 일관성 ──────────────────────────
 

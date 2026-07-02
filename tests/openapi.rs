@@ -3,33 +3,14 @@
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use files::config::Config;
-use files::http::{self, AppState};
 use tower::ServiceExt;
 
-fn app() -> (axum::Router, tempfile::TempDir) {
-    let d = tempfile::tempdir().unwrap();
-    let keys_path = d.path().join("keys.json");
-    std::fs::write(&keys_path, r#"[{"id":"a","sha256":"00","service":"ops","admin":true}]"#).unwrap();
-    let dd = d.path().join("data");
-    let cfg = Config::from_env(|k| match k {
-        "FILES_DATA_DIR" => Some(dd.to_string_lossy().to_string()),
-        "FILES_KEYS_PATH" => Some(keys_path.to_string_lossy().to_string()),
-        _ => None,
-    })
-    .unwrap();
-    let state: AppState = http::build_state(cfg).unwrap();
-    (http::internal::router(state), d)
-}
-
-async fn body_json(resp: axum::response::Response) -> serde_json::Value {
-    let b = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-    serde_json::from_slice(&b).unwrap()
-}
+mod common;
+use common::{body_json, internal_app};
 
 #[tokio::test]
 async fn serves_generated_openapi_spec_unauthenticated() {
-    let (app, _d) = app();
+    let (app, _d) = internal_app(r#"[{"id":"a","sha256":"00","service":"ops","admin":true}]"#);
     // /openapi.json은 인증 없이 서빙(문서는 비밀 아님)
     let res = app
         .oneshot(Request::builder().uri("/openapi.json").body(Body::empty()).unwrap())
@@ -56,7 +37,7 @@ async fn serves_generated_openapi_spec_unauthenticated() {
 /// ① 업로드 바디 = 바이너리(텍스트 아님) ② 스펙은 **내부 전용** — 공개 경로(다른 origin :8081)는 스펙 밖.
 #[tokio::test]
 async fn spec_binary_upload_and_internal_only() {
-    let (app, _d) = app();
+    let (app, _d) = internal_app(r#"[{"id":"a","sha256":"00","service":"ops","admin":true}]"#);
     let res = app
         .oneshot(Request::builder().uri("/openapi.json").body(Body::empty()).unwrap())
         .await
@@ -102,7 +83,7 @@ async fn spec_binary_upload_and_internal_only() {
 /// 파라미터가 런타임 문법(min/max/pattern)을 계약으로 노출해야 client drift를 막는다.
 #[tokio::test]
 async fn spec_download_declares_binary_range_and_key_grammar() {
-    let (app, _d) = app();
+    let (app, _d) = internal_app(r#"[{"id":"a","sha256":"00","service":"ops","admin":true}]"#);
     let res = app
         .oneshot(Request::builder().uri("/openapi.json").body(Body::empty()).unwrap())
         .await
@@ -162,7 +143,7 @@ async fn spec_download_declares_binary_range_and_key_grammar() {
 /// 에러 경로도 계약에 있어야 생성 클라이언트가 모델링한다.
 #[tokio::test]
 async fn spec_object_ops_document_error_codes() {
-    let (app, _d) = app();
+    let (app, _d) = internal_app(r#"[{"id":"a","sha256":"00","service":"ops","admin":true}]"#);
     let res = app
         .oneshot(Request::builder().uri("/openapi.json").body(Body::empty()).unwrap())
         .await
@@ -199,7 +180,7 @@ async fn spec_object_ops_document_error_codes() {
 /// CDN-로드 UI를 다시 붙이면 이 테스트가 깨져 경고한다. 스펙 렌더는 소비자 로컬 도구로.
 #[tokio::test]
 async fn does_not_serve_interactive_docs_ui() {
-    let (app, _d) = app();
+    let (app, _d) = internal_app(r#"[{"id":"a","sha256":"00","service":"ops","admin":true}]"#);
     let res = app
         .oneshot(Request::builder().uri("/docs").body(Body::empty()).unwrap())
         .await
