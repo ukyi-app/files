@@ -2,17 +2,12 @@
 //! (수기 openapi.yaml 제거 후 코드-우선. 스키마는 응답 타입에서 파생되므로 이 테스트는 핸들러
 //!  #[utoipa::path] 어노테이션이 실제 반환 형태와 일치함을 지킨다.)
 
-use axum::body::Body;
-use axum::http::{header, Request, StatusCode};
-use files::config::Config;
-use files::http::{self, AppState};
-use sha2::{Digest, Sha256};
+use axum::http::StatusCode;
 use tower::ServiceExt;
 use utoipa::OpenApi;
 
-fn sha(s: &str) -> String {
-    hex::encode(Sha256::digest(s.as_bytes()))
-}
+mod common;
+use common::{bearer, body_json, hex_sha, internal_app};
 
 /// 스키마의 required 필드 전부 수집. utoipa는 `#[serde(flatten)]`을 allOf(+$ref)로 표현하므로
 /// 직접 `.required`뿐 아니라 allOf 멤버($ref는 해석)까지 재귀 수집한다.
@@ -47,46 +42,16 @@ fn json_keys(v: &serde_json::Value) -> Vec<String> {
     k
 }
 
-async fn body_json(resp: axum::response::Response) -> serde_json::Value {
-    let b = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-    serde_json::from_slice(&b).unwrap()
-}
-
-fn app() -> (axum::Router, tempfile::TempDir) {
-    let d = tempfile::tempdir().unwrap();
-    let keys_path = d.path().join("keys.json");
-    let keys = format!(
-        r#"[{{"id":"w","sha256":"{}","service":"page","writeBuckets":["skills"],"readBuckets":["skills"]}},{{"id":"a","sha256":"{}","service":"ops","admin":true}}]"#,
-        sha("writer"),
-        sha("admin")
-    );
-    std::fs::write(&keys_path, keys).unwrap();
-    let dd = d.path().join("data");
-    let cfg = Config::from_env(|k| match k {
-        "FILES_DATA_DIR" => Some(dd.to_string_lossy().to_string()),
-        "FILES_KEYS_PATH" => Some(keys_path.to_string_lossy().to_string()),
-        _ => None,
-    })
-    .unwrap();
-    let state: AppState = http::build_state(cfg).unwrap();
-    (http::internal::router(state), d)
-}
-
-fn bearer(method: &str, uri: &str, token: &str, ct: &str, body: &str) -> Request<Body> {
-    Request::builder()
-        .method(method)
-        .uri(uri)
-        .header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .header(header::CONTENT_TYPE, ct)
-        .body(Body::from(body.to_string()))
-        .unwrap()
-}
-
 #[tokio::test]
 async fn responses_match_openapi_schema() {
     let doc: serde_json::Value =
         serde_json::to_value(files::http::openapi::ApiDoc::openapi()).unwrap();
-    let (app, _d) = app();
+    let keys = format!(
+        r#"[{{"id":"w","sha256":"{}","service":"page","writeBuckets":["skills"],"readBuckets":["skills"]}},{{"id":"a","sha256":"{}","service":"ops","admin":true}}]"#,
+        hex_sha(b"writer"),
+        hex_sha(b"admin")
+    );
+    let (app, _d) = internal_app(&keys);
 
     // PUT object → ObjectMeta
     let res = app

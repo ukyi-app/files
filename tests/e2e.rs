@@ -3,11 +3,9 @@
 use files::config::Config;
 use files::http;
 use serde_json::json;
-use sha2::{Digest, Sha256};
 
-fn hex_sha(b: &[u8]) -> String {
-    hex::encode(Sha256::digest(b))
-}
+mod common;
+use common::hex_sha;
 
 struct Harness {
     internal: String,
