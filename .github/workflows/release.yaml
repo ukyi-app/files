@@ -21,3 +21,8 @@ jobs:
     uses: ukyi-app/homelab/.github/workflows/reusable-app-build.yaml@main
     with:
       app: files
+    # reusable의 흡수된 deploy-trigger가 빌드 후 bump-poll 디스패치용으로 쓴다(계약 형태 정합).
+    # files는 시크릿 미프로비저닝이라 항상 clean skip(inert) — 현행 무변경, 크론/베스포크 bump 백스톱.
+    secrets:
+      HOMELAB_DISPATCH_APP_ID: ${{ secrets.HOMELAB_DISPATCH_APP_ID }}
+      HOMELAB_DISPATCH_APP_PRIVATE_KEY: ${{ secrets.HOMELAB_DISPATCH_APP_PRIVATE_KEY }}
