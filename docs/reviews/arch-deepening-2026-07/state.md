@@ -3,7 +3,7 @@ refactor: arch-deepening-2026-07
 invariant-class: refactor     # Rule 0 answered: behavior preserved, structural deepening, no metric, not breadth
 entry-track: architecture     # Rule 0 answered: behavior does NOT change
 review-track: full
-pipeline-stage: intake        # intake | discover | design | ...
+pipeline-stage: discover      # intake | discover | design | ...
 issue-tracker: local
 candidate:                    # set at discover: the picked deepening candidate (one line)
 intake-grill:                 # "done" after discover's grilling — design runs capture-only
