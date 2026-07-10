@@ -1,7 +1,7 @@
 {
   "green": true,
-  "baselineSha": "aa854ef8d6649232c9f577d6651bef01ae96d471",
+  "baselineSha": "c889f75ad3bc222ce4c13c7adfb103e54b87b534",
   "testCmd": "cargo test",
   "cases": 94,
-  "notes": "rung (a): 전체 스위트(94 passed / 8 suites) + 골든 레이아웃 트리 + plan-gate r1 수용분 — 심링크 커밋 포인터 현행 행동(P-2)·업로드 중 .tmp-* 관측/grace 보존/에러 정리(P-3). 전부 tests/layout_tree.rs, Store pub API+reconcile::run_once 경유(내부 미접근). 앵커는 리팩터 대상 위의 불변 seam. path.rs 인라인 테스트는 R-1에서 단언 불변으로 layout.rs로 축자 이주 예정 — 동일 행동의 독립 상위 핀(adversarial 400 modes·골든 트리) 존재."
+  "notes": "rung (a): 전체 스위트(94 passed / 8 suites) + 골든 레이아웃 트리 + plan-gate 수용분 — 심링크 커밋 포인터 현행 행동(P-2, P-4로 비-동어반복화: 심링크가 유일한 포인터인 블롭으로 reconcile 변별)·업로드 중 .tmp-* 관측/grace 보존/에러 정리(P-3). 전부 tests/layout_tree.rs, Store pub API+reconcile::run_once 경유(내부 미접근). 앵커는 리팩터 대상 위의 불변 seam. path.rs 인라인 테스트는 R-1에서 단언 불변으로 layout.rs로 축자 이주 예정 — 동일 행동의 독립 상위 핀(adversarial 400 modes·골든 트리) 존재."
 }
