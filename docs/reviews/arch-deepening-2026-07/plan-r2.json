@@ -1,0 +1,31 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "plan",
+  "verdict": "needs-attention",
+  "summary": "No-ship: P-1 and P-3 are addressed, but P-2’s reconciliation lock remains tautological and cannot detect the unsafe symlink regression it claims to pin.",
+  "planFile": "docs/refactors/arch-deepening-2026-07.md",
+  "planInDiff": true,
+  "reviewedFileCount": 2,
+  "target": "working tree diff",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 1,
+  "planFindingCount": 1,
+  "findings": [
+    {
+      "severity": "critical",
+      "title": "P-2 reconciliation characterization does not depend on the symlink",
+      "body": "The plan claims the committed test pins symlink traversal through both list and reconcile. However, the test leaves `b/real.meta.json` in place and makes the symlink reference the same SHA. Reconciliation therefore still reports `referenced: 1` and `gc_pending: 0` if it ignores the symlink entirely, allowing a pointers-all regression that could garbage-collect blobs referenced only through symlinked metadata. This is a tautological behavior lock at the reconciliation seam.",
+      "file": "docs/refactors/arch-deepening-2026-07.md",
+      "line_start": 152,
+      "line_end": 153,
+      "confidence": 0.99,
+      "recommendation": "Make the symlink the only metadata pointer to its blob before calling `run_once`, then assert `referenced: 1`, no pending GC entry, and blob survival. Refresh the characterization baseline afterward.",
+      "isPlanFinding": true
+    }
+  ],
+  "next_steps": [
+    "Correct the P-2 test, commit the strengthened lock, and rerun the full `cargo test` lock command in a writable environment."
+  ]
+}

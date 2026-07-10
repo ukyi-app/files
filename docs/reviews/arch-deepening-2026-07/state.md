@@ -3,7 +3,7 @@ refactor: arch-deepening-2026-07
 invariant-class: refactor     # Rule 0 answered: behavior preserved, structural deepening, no metric, not breadth
 entry-track: architecture     # Rule 0 answered: behavior does NOT change
 review-track: full
-pipeline-stage: plan-gate     # intake | discover | design | ... (source of truth는 이제 docs/refactors/<slug>.md)
+pipeline-stage: executing     # source of truth는 docs/refactors/<slug>.md (plan gate r3 approve)
 issue-tracker: local
 candidate: Layout 소유 모듈 — on-disk 컨벤션(경로·이름 계산)의 6파일 산포를 하나의 깊은 모듈로 응집 (인간 선택, 2026-07-10)
 intake-grill: done            # "done" after discover's grilling — design runs capture-only

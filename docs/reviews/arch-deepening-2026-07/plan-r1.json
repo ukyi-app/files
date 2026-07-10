@@ -1,0 +1,53 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "plan",
+  "verdict": "needs-attention",
+  "summary": "No-ship: the plan breaks existing public interfaces, states a false traversal contract, and relies on a characterization lock that cannot detect a broken temporary-file convention.",
+  "planFile": "docs/refactors/arch-deepening-2026-07.md",
+  "planInDiff": true,
+  "reviewedFileCount": 1,
+  "target": "working tree diff",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 3,
+  "planFindingCount": 3,
+  "findings": [
+    {
+      "severity": "critical",
+      "title": "Simpler alternative: deepen existing modules behind compatibility facades",
+      "body": "The behavior-preserving claim conflicts with removing `pub mod path` and changing `KeyLocks::lock(&str)` to a two-argument method. Both are currently public, and Cargo.toml does not disable publication. An in-repository grep cannot prove that downstream consumers do not exist, while the 92-test lock contains no downstream compile test. Following the plan therefore creates source-incompatible behavior despite B10. A simpler refactoring is to deepen `path` in place—or retain it as a re-exporting compatibility facade—and add an internal `lock_for(bucket, key)` while preserving `lock(&str)`.",
+      "file": "docs/refactors/arch-deepening-2026-07.md",
+      "line_start": 111,
+      "line_end": 116,
+      "confidence": 0.99,
+      "recommendation": "Preserve every existing public path and signature through compatibility wrappers, or reclassify the work as a breaking change with an explicit migration/versioning plan.",
+      "isPlanFinding": true
+    },
+    {
+      "severity": "critical",
+      "title": "W1 incorrectly narrows current traversal to regular files",
+      "body": "Current listing and reconciliation code only branches on `file_type().is_dir()` and processes every non-directory entry. Consequently, a symlink named `<key>.meta.json` is currently read through and can appear in listings or keep its referenced blob alive. W1 instead defines the exact yield set as regular files. An engineer implementing that contract with `is_file()` would hide such entries and could cause reconciliation to garbage-collect their blobs. The committed suite has no symlink characterization, so this behavior change would not be caught.",
+      "file": "docs/refactors/arch-deepening-2026-07.md",
+      "line_start": 83,
+      "line_end": 84,
+      "confidence": 0.98,
+      "recommendation": "Before R-1, add stable-seam characterization tests for symlinked metadata in both `Store::list` and `reconcile::run_once`; then define W1 as the observed non-directory behavior, or route intentional narrowing through a behavior-changing pipeline.",
+      "isPlanFinding": true
+    },
+    {
+      "severity": "high",
+      "title": "The committed lock never observes the temporary path R-2 changes",
+      "body": "The plan claims the golden test directly pins B3, including `.objects/.tmp-*`, but that test waits for `put_stream` to finish before inspecting the tree. Existing tests either assert that no `.tmp-` residue remains or manually create a `.tmp-stream`; none observe the actual writer-generated name during an active upload. `temp_blob_path` could therefore use a different prefix while all locked tests remain green, leaving interrupted uploads unrecognized and permanently ignored by reconciliation. A new R-1 unit test would encode the proposed implementation, not characterize the baseline through a surviving seam.",
+      "file": "docs/refactors/arch-deepening-2026-07.md",
+      "line_start": 143,
+      "line_end": 152,
+      "confidence": 0.99,
+      "recommendation": "Commit a baseline test that blocks `Store::put_stream` mid-stream, observes exactly one `.objects/.tmp-*` entry, verifies reconciliation preserves it within grace, and then verifies cancellation/error cleanup.",
+      "isPlanFinding": true
+    }
+  ],
+  "next_steps": [
+    "Revise the plan and strengthen the committed characterization baseline before starting R-1."
+  ]
+}
