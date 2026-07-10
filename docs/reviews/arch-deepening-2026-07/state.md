@@ -59,3 +59,11 @@ Conflict(409) dead variant(error.rs:19), 시계 역행 시 temp-age 0(reconcile.
 
 도메인 모델: CONTEXT.md 생성(Layout 등 용어 등재) — 이 커밋에 포함(one-writer,
 pre-plan-gate, base 브랜치 — hard rule 9 충족).
+
+## Executing 동의 범위 (인간 승인, 2026-07-10)
+
+워크트리 .claude/worktrees/(EnterWorktree) · 브랜치 refactor-arch-deepening-2026-07.
+범위: R-1→R-6 직렬, fresh 구현 서브에이전트/증분 + 컨덕터측 /code-review +
+컨덕터 커밋(권한 위임). 매 dispatch 전 --gate-check. R-1 종료 시 STOP →
+structure gate. 메인 브랜치 직접 수정 금지. lock(cargo test) 초록 유지,
+red = 증분 수정(테스트 수정 금지).
