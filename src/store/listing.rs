@@ -1,7 +1,7 @@
 use super::Store;
 use crate::error::AppError;
 use crate::meta::ObjectMeta;
-use crate::path::valid_bucket;
+use crate::layout::valid_bucket;
 
 impl Store {
     /// 버킷 서브트리를 재귀 순회하며 `*.meta.json`을 수집(중첩 키 포함).

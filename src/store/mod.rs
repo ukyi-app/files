@@ -9,7 +9,7 @@ mod objects;
 mod tests;
 
 use crate::error::AppError;
-use crate::path::{meta_path, safe_object_path};
+use crate::layout::{meta_path, safe_object_path};
 use std::path::PathBuf;
 
 /// content-addressed 저장소. 바이트는 `.objects/<sha256>`에 불변 저장하고,

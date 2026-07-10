@@ -2,7 +2,7 @@ use super::Store;
 use super::atomic;
 use crate::error::AppError;
 use crate::meta::BucketMeta;
-use crate::path::valid_bucket;
+use crate::layout::valid_bucket;
 
 impl Store {
     pub async fn put_bucket(&self, bucket: &str, meta: &BucketMeta) -> Result<(), AppError> {
