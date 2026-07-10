@@ -4,7 +4,7 @@
 // 골든 값은 현재 코드의 실제 산출을 기록한 것이며(characterization), 증분을
 // 통과시키기 위한 재기록은 금지된다.
 use files::error::AppError;
-use files::meta::{BucketMeta, ObjectMeta, Visibility};
+use files::meta::{BucketMeta, Visibility};
 use files::store::{reconcile, Store};
 use sha2::{Digest, Sha256};
 use std::path::Path;
@@ -93,9 +93,11 @@ async fn on_disk_layout_golden_tree() {
     assert_eq!(rel_files(&root).await, expected);
 }
 
-/// characterization (plan-gate P-2): 심링크 커밋 포인터의 현행 행동.
+/// characterization (plan-gate P-2, r2 P-4 반영): 심링크 커밋 포인터의 현행 행동.
 /// 순회는 lstat 의미론의 비-디렉터리 분기(file_type().is_dir())라 심링크가 파일처럼
 /// 통과하고, 내용 read는 링크를 추종한다. dangling 링크는 조용히 제외된다.
+/// 핵심(비-동어반복): `only`의 블롭은 **심링크로만** 참조된다 — reconcile이 심링크를
+/// 무시하는 회귀가 생기면 gc_pending:1로 즉시 적발된다.
 #[cfg(unix)]
 #[tokio::test]
 async fn symlinked_commit_pointer_current_behavior() {
@@ -107,39 +109,45 @@ async fn symlinked_commit_pointer_current_behavior() {
         .await
         .unwrap();
 
-    // 유효 타깃: 루트 직속 파일(어느 워커도 안 건드는 위치)에 진짜 ObjectMeta JSON
-    let link_meta = ObjectMeta {
-        content_type: "text/plain".into(),
-        size: 7,
-        sha256: real_meta.sha256.clone(),
-        created_at: "2026-01-01T00:00:00Z".into(),
-        uploaded_by: "ext".into(),
-    };
-    let target = root.join("link-target.json");
-    tokio::fs::write(&target, serde_json::to_vec(&link_meta).unwrap())
+    // 심링크로만 참조되는 블롭: put으로 생성한 진짜 포인터를 루트 직속(워커 비대상
+    // 위치)으로 옮기고, 그 자리를 심링크로 대체한다
+    let only_meta = s
+        .put("b", "only", "text/plain", "test", b"only-payload".to_vec())
         .await
         .unwrap();
-    std::os::unix::fs::symlink(&target, root.join("b").join("link.meta.json")).unwrap();
+    let target = root.join("link-target.json");
+    tokio::fs::rename(root.join("b").join("only.meta.json"), &target)
+        .await
+        .unwrap();
+    std::os::unix::fs::symlink(&target, root.join("b").join("only.meta.json")).unwrap();
     // dangling 심링크 — read 실패 → 조용히 제외
     std::os::unix::fs::symlink(root.join("nope"), root.join("b").join("gone.meta.json")).unwrap();
 
     let listed = s.list("b").await.unwrap();
     assert_eq!(
         listed,
-        vec![("link".to_string(), link_meta), ("real".to_string(), real_meta)]
+        vec![
+            ("only".to_string(), only_meta.clone()),
+            ("real".to_string(), real_meta),
+        ]
     );
 
-    // collect_referenced도 심링크를 추종 — 블롭 참조 유지, GC 미등재
+    // collect_referenced도 심링크를 추종: referenced에 sha_only가 포함돼야(=2) 하며,
+    // 심링크 무시 회귀 시 sha_only 미참조 → gc_pending:1로 이 단언이 깨진다
     let stats = reconcile::run_once(&root, Duration::from_secs(3600)).await.unwrap();
     assert_eq!(
         stats,
         reconcile::ReconcileStats {
-            referenced: 1,
+            referenced: 2,
             gc_deleted: 0,
             gc_pending: 0,
             temps_deleted: 0,
             quarantined: 0,
         }
+    );
+    assert!(
+        tokio::fs::try_exists(s.blob_path(&only_meta.sha256)).await.unwrap(),
+        "심링크로만 참조되는 블롭 생존"
     );
 }
 
