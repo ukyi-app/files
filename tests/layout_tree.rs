@@ -3,7 +3,8 @@
 // 데이터 루트의 상대 파일 경로 전체를 정확히 단언해 이름 규칙을 한 곳에서 핀한다.
 // 골든 값은 현재 코드의 실제 산출을 기록한 것이며(characterization), 증분을
 // 통과시키기 위한 재기록은 금지된다.
-use files::meta::{BucketMeta, Visibility};
+use files::error::AppError;
+use files::meta::{BucketMeta, ObjectMeta, Visibility};
 use files::store::{reconcile, Store};
 use sha2::{Digest, Sha256};
 use std::path::Path;
@@ -90,4 +91,122 @@ async fn on_disk_layout_golden_tree() {
     ];
     expected.sort();
     assert_eq!(rel_files(&root).await, expected);
+}
+
+/// characterization (plan-gate P-2): 심링크 커밋 포인터의 현행 행동.
+/// 순회는 lstat 의미론의 비-디렉터리 분기(file_type().is_dir())라 심링크가 파일처럼
+/// 통과하고, 내용 read는 링크를 추종한다. dangling 링크는 조용히 제외된다.
+#[cfg(unix)]
+#[tokio::test]
+async fn symlinked_commit_pointer_current_behavior() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    let s = Store::new(root.clone());
+    let real_meta = s
+        .put("b", "real", "text/plain", "test", b"payload".to_vec())
+        .await
+        .unwrap();
+
+    // 유효 타깃: 루트 직속 파일(어느 워커도 안 건드는 위치)에 진짜 ObjectMeta JSON
+    let link_meta = ObjectMeta {
+        content_type: "text/plain".into(),
+        size: 7,
+        sha256: real_meta.sha256.clone(),
+        created_at: "2026-01-01T00:00:00Z".into(),
+        uploaded_by: "ext".into(),
+    };
+    let target = root.join("link-target.json");
+    tokio::fs::write(&target, serde_json::to_vec(&link_meta).unwrap())
+        .await
+        .unwrap();
+    std::os::unix::fs::symlink(&target, root.join("b").join("link.meta.json")).unwrap();
+    // dangling 심링크 — read 실패 → 조용히 제외
+    std::os::unix::fs::symlink(root.join("nope"), root.join("b").join("gone.meta.json")).unwrap();
+
+    let listed = s.list("b").await.unwrap();
+    assert_eq!(
+        listed,
+        vec![("link".to_string(), link_meta), ("real".to_string(), real_meta)]
+    );
+
+    // collect_referenced도 심링크를 추종 — 블롭 참조 유지, GC 미등재
+    let stats = reconcile::run_once(&root, Duration::from_secs(3600)).await.unwrap();
+    assert_eq!(
+        stats,
+        reconcile::ReconcileStats {
+            referenced: 1,
+            gc_deleted: 0,
+            gc_pending: 0,
+            temps_deleted: 0,
+            quarantined: 0,
+        }
+    );
+}
+
+async fn tmp_entries(objects: &Path) -> Vec<String> {
+    let mut v = Vec::new();
+    if let Ok(mut rd) = tokio::fs::read_dir(objects).await {
+        while let Some(e) = rd.next_entry().await.unwrap() {
+            let n = e.file_name().to_string_lossy().to_string();
+            if n.starts_with(".tmp-") {
+                v.push(n);
+            }
+        }
+    }
+    v
+}
+
+/// characterization (plan-gate P-3): 업로드 진행 중 라이터가 실제로 생성하는 임시
+/// 파일 이름을 관측한다 — `.objects/.tmp-*` 정확히 1개, grace 내 reconcile 보존,
+/// 스트림 에러 종료 시 정리까지. 접두사가 바뀌면 이 테스트가 잡는다.
+#[tokio::test]
+async fn put_stream_midflight_temp_observed_and_preserved() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    let s = Store::new(root.clone());
+    let objects = root.join(".objects");
+
+    let (tx, rx) = futures::channel::mpsc::unbounded::<Result<bytes::Bytes, std::io::Error>>();
+    let s2 = s.clone();
+    let task = tokio::spawn(async move {
+        s2.put_stream("b", "big", "application/octet-stream", "test", rx, 1 << 20)
+            .await
+    });
+    tx.unbounded_send(Ok(bytes::Bytes::from_static(b"chunk-1"))).unwrap();
+
+    // 업로드가 열어둔 temp가 나타날 때까지 폴링(로컬 fs — 수 ms 내)
+    let mut tmps = Vec::new();
+    for _ in 0..500 {
+        tmps = tmp_entries(&objects).await;
+        if !tmps.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(tmps.len(), 1, "진행 중 업로드의 temp는 정확히 1개: {tmps:?}");
+    assert!(tmps[0].starts_with(".tmp-"));
+
+    // grace 내 reconcile은 활성 temp를 보존한다
+    let stats = reconcile::run_once(&root, Duration::from_secs(3600)).await.unwrap();
+    assert_eq!(
+        stats,
+        reconcile::ReconcileStats {
+            referenced: 0,
+            gc_deleted: 0,
+            gc_pending: 0,
+            temps_deleted: 0,
+            quarantined: 0,
+        }
+    );
+    assert!(
+        tokio::fs::try_exists(objects.join(&tmps[0])).await.unwrap(),
+        "grace 내 활성 temp 보존"
+    );
+
+    // 스트림 에러 → stream_error + temp 정리
+    tx.unbounded_send(Err(std::io::Error::other("boom"))).unwrap();
+    drop(tx);
+    let res = task.await.unwrap();
+    assert!(matches!(res, Err(AppError::BadRequest("stream_error"))));
+    assert!(tmp_entries(&objects).await.is_empty(), "에러 종료 후 temp 잔재 없음");
 }
