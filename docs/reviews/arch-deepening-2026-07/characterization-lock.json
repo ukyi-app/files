@@ -1,0 +1,7 @@
+{
+  "green": true,
+  "baselineSha": "2cb060d9a487f9ed6d22a00084e87ac87dd50acf",
+  "testCmd": "cargo test",
+  "cases": 92,
+  "notes": "rung (a): 전체 스위트(92 passed / 8 suites) + 신규 골든 레이아웃 트리(tests/layout_tree.rs, Store pub API+reconcile::run_once 경유·내부 미접근). 앵커는 전부 리팩터 대상 위의 불변 seam(HTTP 라우터·Store pub API·OpenAPI 스냅샷·fs 트리 관측). path.rs 인라인 테스트는 R-1에서 단언 불변으로 layout.rs로 축자 이주 예정 — 동일 행동의 독립 상위 핀(adversarial 400 modes·골든 트리) 존재."
+}
