@@ -54,13 +54,13 @@ pub fn valid_key(k: &str) -> Result<(), AppError> {
 
 /// 메타 파일 경로 계산용(바이트는 content-addressed `.objects/`에 저장 — M3).
 /// segment_ok가 traversal을 차단하므로 존재하지 않는 경로라도 안전(canonicalize 불요).
-pub fn safe_object_path(root: &Path, bucket: &str, key: &str) -> Result<PathBuf, AppError> {
+pub(crate) fn safe_object_path(root: &Path, bucket: &str, key: &str) -> Result<PathBuf, AppError> {
     valid_bucket(bucket)?;
     valid_key(key)?;
     Ok(root.join(bucket).join(key))
 }
 
-pub fn meta_path(object: &Path) -> PathBuf {
+pub(crate) fn meta_path(object: &Path) -> PathBuf {
     let mut s = object.as_os_str().to_owned();
     s.push(META_SUFFIX);
     PathBuf::from(s)
@@ -78,6 +78,12 @@ pub struct Layout {
 impl Layout {
     pub fn new(root: PathBuf) -> Self {
         Self { root }
+    }
+
+    /// 레이아웃의 베이스 디렉터리. 경로 저작이 아니라 루트 자체가 필요한 소비자용
+    /// (루트 `read_dir`, 버킷 서브트리 워크 시작점) — 이름 규칙의 단일 소유는 불변.
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
     }
 
     /// (bucket, key)의 커밋 포인터(`<key>.meta.json`) 경로.

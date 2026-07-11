@@ -9,7 +9,7 @@ impl Store {
     /// (발견 P2-1: 비재귀 스캔은 중첩 키 객체를 누락하므로 반드시 재귀)
     pub async fn list(&self, bucket: &str) -> Result<Vec<(String, ObjectMeta)>, AppError> {
         valid_bucket(bucket)?;
-        let bucket_dir = self.root.join(bucket);
+        let bucket_dir = self.layout.root().join(bucket);
         if !tokio::fs::try_exists(&bucket_dir)
             .await
             .map_err(AppError::Internal)?

@@ -1,13 +1,13 @@
 use super::Store;
 use super::atomic;
 use crate::error::AppError;
+use crate::layout::OBJECTS_DIR;
 use crate::meta::BucketMeta;
-use crate::layout::valid_bucket;
 
 impl Store {
     pub async fn put_bucket(&self, bucket: &str, meta: &BucketMeta) -> Result<(), AppError> {
-        valid_bucket(bucket)?;
-        let path = self.root.join(bucket).join(".bucket.json");
+        // bucket_meta_path가 valid_bucket 검증을 포함(경로 저작 전 Err).
+        let path = self.layout.bucket_meta_path(bucket)?;
         atomic::write_atomic(&path, &serde_json::to_vec(meta).unwrap())
             .await
             .map_err(AppError::Internal)?;
@@ -15,15 +15,14 @@ impl Store {
     }
 
     pub async fn get_bucket(&self, bucket: &str) -> Result<BucketMeta, AppError> {
-        valid_bucket(bucket)?;
-        let path = self.root.join(bucket).join(".bucket.json");
+        let path = self.layout.bucket_meta_path(bucket)?;
         let raw = tokio::fs::read(&path).await.map_err(|_| AppError::NotFound)?;
         serde_json::from_slice(&raw).map_err(|_| AppError::NotFound)
     }
 
     /// `.bucket.json`을 보유한 최상위 디렉터리를 버킷으로 열거(정렬).
     pub async fn list_buckets(&self) -> Result<Vec<(String, BucketMeta)>, AppError> {
-        let mut rd = match tokio::fs::read_dir(&self.root).await {
+        let mut rd = match tokio::fs::read_dir(self.layout.root()).await {
             Ok(rd) => rd,
             Err(_) => return Ok(vec![]),
         };
@@ -34,7 +33,7 @@ impl Store {
             }
             let name = e.file_name();
             let name = name.to_string_lossy().to_string();
-            if name == ".objects" {
+            if name == OBJECTS_DIR {
                 continue;
             }
             if let Ok(bm) = self.get_bucket(&name).await {

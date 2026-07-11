@@ -1,6 +1,7 @@
 use crate::auth::KeyRegistry;
 use crate::capacity::Capacity;
 use crate::config::Config;
+use crate::layout::Layout;
 use crate::store::Store;
 use std::sync::Arc;
 
@@ -14,7 +15,7 @@ pub struct AppState {
 
 /// Config로부터 AppState 구성 — data_dir/.objects 생성, keys 로드, Store/Capacity 결선.
 pub fn build_state(cfg: Config) -> std::io::Result<AppState> {
-    std::fs::create_dir_all(cfg.data_dir.join(".objects"))?;
+    std::fs::create_dir_all(Layout::new(cfg.data_dir.clone()).objects_dir())?;
     let keys = KeyRegistry::load(&cfg.keys_path)?;
     let store = Store::new(cfg.data_dir.clone());
     let cap = Capacity::new(cfg.data_dir.clone(), cfg.min_free_bytes);

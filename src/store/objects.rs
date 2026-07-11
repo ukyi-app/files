@@ -65,11 +65,11 @@ impl Store {
         let meta_target = self.meta_for(bucket, key)?; // 검증
         let _g = self.locks.lock(&format!("{bucket}/{key}")).await;
 
-        let objects_dir = self.root.join(".objects");
+        let objects_dir = self.layout.objects_dir();
         atomic::mkdir_p_durable(&objects_dir)
             .await
             .map_err(AppError::Internal)?;
-        let tmp = objects_dir.join(format!(".tmp-{}", atomic::unique_suffix()));
+        let tmp = self.layout.temp_blob_path(&atomic::unique_suffix());
 
         let (size, sha) = match stream_to_temp(&tmp, stream, max).await {
             Ok(v) => v,

@@ -67,8 +67,11 @@ impl Layout {
     pub fn gc_pending_path(&self) -> PathBuf;
     pub fn corrupt_dir(&self) -> PathBuf;
     pub(crate) fn root(&self) -> &Path;                   // (A-1) 베이스 디렉터리 노출 — 경로 저작 아님.
-                                                          // 소비자 2: buckets.rs list_buckets의 루트 열거(영구),
+                                                          // 소비자 3: buckets.rs list_buckets의 루트 열거(영구),
+                                                          // store/tests.rs의 temp-잔재 단언(영구 — raw 리터럴 유지),
                                                           // listing.rs의 bucket_dir(R-3에서 소멸).
+// safe_object_path·meta_path는 pub이 아니라 pub(crate) — meta_for의 구현 세부이며
+// crate 외부에 Layout 우회 경로-저작을 노출하지 않는다(R-2 Standards 리뷰 S-2).
 
     // ── 이름 읽기 1: 커밋 포인터 워커 (지배 패턴 흡수) ──
     pub fn pointers_in_bucket(&self, bucket) -> Result<CommitPointerWalk, AppError>;
@@ -133,6 +136,16 @@ config 값이므로 노출해도 seam의 취지(`.objects`·`.tmp-`·`.bucket.js
 보유)는 그대로 사라진다. 대안(Store가 root 병행 보유 / list_buckets의 루트 열거를
 layout으로 흡수)은 각각 증분 취지 위배 · 계획서 결정(`OBJECTS_DIR`를 "buckets.rs
 루트 스킵 1곳용"으로 pub(crate) 노출) 번복이라 기각.
+
+**계획 개정 A-2**(2026-07-12, R-2 Standards 리뷰 S-2 수용): `safe_object_path`·
+`meta_path`의 가시성을 `pub` → `pub(crate)`로 좁힌다. R-1은 store/mod.rs가 아직
+이 둘을 직접 소비했기에 pub을 유지했으나, R-2가 그 소비자를 `Layout::meta_for`
+위임으로 대체하며 crate 외부 소비자를 0으로 만들었다 — 남겨두면 Layout을 우회하는
+**공개** 경로-저작 통로가 되어 CONTEXT.md("Layout을 거치지 않은 경로 저작은 규칙
+위반")와 Target shape의 자유함수 공개 표면 목록(둘은 미포함 — `meta_for`의 구현
+세부)에 저촉된다. B10 무저촉(보존은 **소비되는** 표면 기준이고 외부 Rust 소비자
+0 — `publish = false`로 기계 보증). private이 아닌 pub(crate)인 이유는 R-4
+(reconcile)의 crate 내부 사용 여지를 남기기 위함.
 
 ## Behavior Contract
 
