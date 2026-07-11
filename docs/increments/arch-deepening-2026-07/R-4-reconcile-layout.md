@@ -25,8 +25,10 @@ closed:
       referenced:2, mid-stream temp 보존, 골든 트리
 - [ ] `cargo clippy` green
 - [ ] no weakening of the characterization tests (anti-cheat)
-- [ ] reconcile.rs에서 레이아웃 리터럴(`.meta.json`·`.tmp-`·`.objects`·
-      `.gc-pending.json`·`.corrupt`·64-hex 판정) 소멸
+- [ ] reconcile.rs의 **비-테스트 코드**에서 레이아웃 리터럴(`.meta.json`·`.tmp-`·
+      `.objects`·`.gc-pending.json`·`.corrupt`·64-hex 판정) 소멸.
+      **인라인 `#[cfg(test)] mod tests`의 온디스크 리터럴은 raw 유지**(상수 경유 금지 —
+      동어반복이 되어 회귀 감지력을 잃는다. plan gate P-4가 잡았던 실패 유형)
 
 ## Result
 
