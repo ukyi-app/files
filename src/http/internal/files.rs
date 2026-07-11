@@ -25,7 +25,7 @@ pub(crate) struct KeyQuery {
     /// `[A-Za-z0-9._-]`만 허용(`.`으로 시작하는 숨김·`.`/`..`·제어문자 불가). 쿼리 값은 `%2F`로
     /// 인코딩하거나 슬래시를 그대로 둬도 된다. 머신-리더블 `pattern`은 세그먼트 문법만 모델링하는
     /// **필요조건**이며, 예약 접미사(`.meta.json`·`.bucket.json`) 배제를 포함한 최종 검증은 서버
-    /// `valid_key`(src/path.rs)가 담당한다 — 위반 시 400(invalid_key/reserved_suffix). 접미사 배제를
+    /// `valid_key`(src/layout.rs)가 담당한다 — 위반 시 400(invalid_key/reserved_suffix). 접미사 배제를
     /// pattern에 넣지 않는 것은 lookahead를 Go·Rust regex 등 일부 생성기가 미지원해 검증기 컴파일이
     /// 깨질 수 있기 때문(서버를 진실원으로 둔다).
     #[param(
