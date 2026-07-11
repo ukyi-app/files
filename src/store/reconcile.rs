@@ -1,4 +1,5 @@
 use super::atomic;
+use crate::layout::{classify_objects_entry, Layout, ObjectsEntry};
 use crate::meta::ObjectMeta;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -20,39 +21,18 @@ pub async fn run_once(root: &Path, gc_grace: Duration) -> std::io::Result<Reconc
     run_once_at(root, SystemTime::now(), gc_grace).await
 }
 
-/// 모든 버킷 서브트리를 재귀 순회해 `*.meta.json`이 가리키는 sha 집합 수집.
-/// (발견 P2-1: 비재귀 글롭은 중첩 키 blob을 미참조로 오인)
-async fn collect_referenced(root: &Path) -> std::io::Result<HashSet<String>> {
+/// 전 버킷 커밋 포인터를 워크해 `*.meta.json`이 가리키는 sha 집합 수집.
+/// 순회·이름 규칙(루트 직속 파일 배제·`.objects` 스킵·temp 제외·재귀)은 워커 소유(R-4).
+/// (발견 P2-1: 비재귀 글롭은 중첩 키 blob을 미참조로 오인 — 워커가 재귀로 커버)
+/// 여기 남는 정책: 워커가 낸 포인터의 read/파싱 실패는 조용히 skip(B7).
+async fn collect_referenced(layout: &Layout) -> std::io::Result<HashSet<String>> {
     let mut refs = HashSet::new();
-    let mut stack: Vec<std::path::PathBuf> = Vec::new();
-    let mut rd = tokio::fs::read_dir(root).await?;
-    while let Some(e) = rd.next_entry().await? {
-        let name = e.file_name();
-        let name = name.to_string_lossy();
-        if name == ".objects" {
-            continue;
-        }
-        if e.file_type().await?.is_dir() {
-            stack.push(e.path());
-        }
-    }
-    while let Some(dir) = stack.pop() {
-        let mut rd = tokio::fs::read_dir(&dir).await?;
-        while let Some(e) = rd.next_entry().await? {
-            let p = e.path();
-            if e.file_type().await?.is_dir() {
-                stack.push(p);
-                continue;
-            }
-            let name = e.file_name();
-            let name = name.to_string_lossy();
-            if name.starts_with(".tmp-") || !name.ends_with(".meta.json") {
-                continue;
-            }
-            if let Ok(raw) = tokio::fs::read(&p).await {
-                if let Ok(meta) = serde_json::from_slice::<ObjectMeta>(&raw) {
-                    refs.insert(meta.sha256);
-                }
+    let mut walk = layout.pointers_all();
+    // 워커의 io::Error는 무가공 전파(B7) — reconcile은 std::io::Result를 반환한다.
+    while let Some(entry) = walk.next().await? {
+        if let Ok(raw) = tokio::fs::read(&entry.meta_path).await {
+            if let Ok(meta) = serde_json::from_slice::<ObjectMeta>(&raw) {
+                refs.insert(meta.sha256);
             }
         }
     }
@@ -65,23 +45,24 @@ async fn run_once_at(
     now: SystemTime,
     gc_grace: Duration,
 ) -> std::io::Result<ReconcileStats> {
-    let objects = root.join(".objects");
+    let layout = Layout::new(root.to_path_buf());
+    let objects = layout.objects_dir();
     let mut stats = ReconcileStats::default();
     if !tokio::fs::try_exists(&objects).await? {
         return Ok(stats);
     }
 
-    let refs = collect_referenced(root).await?;
+    let refs = collect_referenced(&layout).await?;
     stats.referenced = refs.len();
 
-    let pending_path = objects.join(".gc-pending.json");
+    let pending_path = layout.gc_pending_path();
     let mut pending: HashMap<String, u64> = match tokio::fs::read(&pending_path).await {
         Ok(raw) => serde_json::from_slice(&raw).unwrap_or_default(),
         Err(_) => HashMap::new(),
     };
     let now_secs = now.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
     let grace_secs = gc_grace.as_secs();
-    let corrupt_dir = objects.join(".corrupt");
+    let corrupt_dir = layout.corrupt_dir();
 
     // .objects 직속 항목 스냅샷(순회 중 변경 회피)
     let mut entries = Vec::new();
@@ -94,62 +75,68 @@ async fn run_once_at(
         let p = e.path();
         let name = e.file_name();
         let name = name.to_string_lossy().to_string();
-        if name == ".gc-pending.json" || name == ".corrupt" {
+        // 이름-전용 분류(I/O 없음). Temp가 Blob보다 우선하고 대문자 hex도 Blob이다
+        // (정규화 없음 — 내용 검증에서 격리되는 현행 B6 보존).
+        let class = classify_objects_entry(&name);
+        // O1: 예약 이름(.gc-pending.json/.corrupt)은 file_type 조회 **전에** continue.
+        // stat을 걸지 않는 현행 syscall 순서를 그대로 유지한다.
+        if matches!(class, ObjectsEntry::Reserved) {
             continue;
         }
+        // O2: 디렉터리 스킵은 temp/blob 처리보다 앞.
         let ft = e.file_type().await?;
         if ft.is_dir() {
             continue;
         }
-        // 3) temp 잔재: mtime이 grace보다 오래된 것만 삭제(활성 스트리밍 보존)
-        if name.starts_with(".tmp-") {
-            let mtime = e.metadata().await?.modified().unwrap_or(now);
-            let age = now.duration_since(mtime).unwrap_or_default();
-            if age.as_secs() > grace_secs {
-                tokio::fs::remove_file(&p).await?;
-                stats.temps_deleted += 1;
-            }
-            continue;
-        }
-        // 유효 blob 이름(64 hex)만 처리
-        let is_sha = name.len() == 64 && name.bytes().all(|b| b.is_ascii_hexdigit());
-        if !is_sha {
-            continue;
-        }
-        // 4) 무결성: 내용 sha == 파일명 검증, 불일치 → 격리
-        let content = tokio::fs::read(&p).await?;
-        if hex::encode(Sha256::digest(&content)) != name {
-            atomic::mkdir_p_durable(&corrupt_dir).await?;
-            tokio::fs::rename(&p, corrupt_dir.join(&name)).await?;
-            atomic::fsync_dir(&objects).await?;
-            pending.remove(&name);
-            stats.quarantined += 1;
-            tracing::warn!(sha = %name, "quarantined corrupt blob (bit rot)");
-            continue;
-        }
-        // 2) 2단계 tombstone GC: 미참조 지속시간 기준
-        if refs.contains(&name) {
-            pending.remove(&name); // 다시 참조됨
-        } else {
-            match pending.get(&name) {
-                Some(&first) if now_secs.saturating_sub(first) > grace_secs => {
+        match class {
+            // 3) temp 잔재: mtime이 grace보다 오래된 것만 삭제(활성 스트리밍 보존)
+            ObjectsEntry::Temp => {
+                let mtime = e.metadata().await?.modified().unwrap_or(now);
+                let age = now.duration_since(mtime).unwrap_or_default();
+                if age.as_secs() > grace_secs {
                     tokio::fs::remove_file(&p).await?;
+                    stats.temps_deleted += 1;
+                }
+            }
+            ObjectsEntry::Blob => {
+                // 4) 무결성: 내용 sha == 파일명 검증, 불일치 → 격리
+                let content = tokio::fs::read(&p).await?;
+                if hex::encode(Sha256::digest(&content)) != name {
+                    atomic::mkdir_p_durable(&corrupt_dir).await?;
+                    tokio::fs::rename(&p, corrupt_dir.join(&name)).await?;
                     atomic::fsync_dir(&objects).await?;
                     pending.remove(&name);
-                    stats.gc_deleted += 1;
+                    stats.quarantined += 1;
+                    tracing::warn!(sha = %name, "quarantined corrupt blob (bit rot)");
+                    continue;
                 }
-                Some(_) => {} // 아직 grace 내 — 보존
-                None => {
-                    pending.insert(name.clone(), now_secs); // 최초 관측
+                // 2) 2단계 tombstone GC: 미참조 지속시간 기준
+                if refs.contains(&name) {
+                    pending.remove(&name); // 다시 참조됨
+                } else {
+                    match pending.get(&name) {
+                        Some(&first) if now_secs.saturating_sub(first) > grace_secs => {
+                            tokio::fs::remove_file(&p).await?;
+                            atomic::fsync_dir(&objects).await?;
+                            pending.remove(&name);
+                            stats.gc_deleted += 1;
+                        }
+                        Some(_) => {} // 아직 grace 내 — 보존
+                        None => {
+                            pending.insert(name.clone(), now_secs); // 최초 관측
+                        }
+                    }
                 }
             }
+            // Reserved는 위(O1)에서 이미 continue. 그 외 이름은 조용히 무시(현행 !is_sha).
+            ObjectsEntry::Reserved | ObjectsEntry::Other => {}
         }
     }
 
     // 존재하지 않는 blob의 pending 엔트리 정리
     let mut cleaned = HashMap::new();
     for (sha, t) in pending.into_iter() {
-        if tokio::fs::try_exists(objects.join(&sha)).await? {
+        if tokio::fs::try_exists(layout.blob_path(&sha)).await? {
             cleaned.insert(sha, t);
         }
     }
