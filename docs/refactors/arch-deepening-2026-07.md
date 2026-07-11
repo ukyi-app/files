@@ -51,6 +51,9 @@ pub fn valid_bucket(b: &str) -> Result<(), AppError>;   // invalid_bucket
 pub fn valid_key(k: &str) -> Result<(), AppError>;      // invalid_key | reserved_suffix
 pub(crate) const RESERVED_BUCKETS: &[&str];             // R-6이 public 라우트 파생에 사용
 pub(crate) const OBJECTS_DIR: &str;                     // buckets.rs 루트 스킵 1곳용
+pub(crate) fn temp_name(unique: &str) -> String;        // ".tmp-<unique>" — root 무관 이름 저작
+                                                        // (S-1) atomic::write_atomic처럼 임의 부모의
+                                                        // 형제로 temp를 두는 소비자용. temp 접두사의 유일 저작점.
 
 // ── 경로 만들기 (값 타입 — root를 한 번 묶음) ──
 #[derive(Clone)] pub struct Layout { root: PathBuf }
@@ -59,7 +62,7 @@ impl Layout {
     pub fn meta_for(&self, bucket, key) -> Result<PathBuf, AppError>; // 검증 포함
     pub fn blob_path(&self, sha: &str) -> PathBuf;        // root/.objects/<sha>
     pub fn objects_dir(&self) -> PathBuf;
-    pub fn temp_blob_path(&self, unique: &str) -> PathBuf; // root/.objects/.tmp-<u>
+    pub fn temp_blob_path(&self, unique: &str) -> PathBuf; // root/.objects/ + temp_name(u) 위임
     pub fn bucket_meta_path(&self, bucket) -> Result<PathBuf, AppError>;
     pub fn gc_pending_path(&self) -> PathBuf;
     pub fn corrupt_dir(&self) -> PathBuf;
@@ -166,7 +169,7 @@ seam.
 | id | what moves | blocked-by | notes |
 |---|---|---|---|
 | R-1 | `src/layout.rs` 신설: path.rs 흡수(fn·테스트 축자 이주) + Layout 경로 메서드 + classify_objects_entry + 상수 + CommitPointerWalk 워커 + 자체 단위 테스트(분류 테이블·round-trip 속성·워커 tempdir). path.rs 삭제, `crate::path::` 임포트 기계 갱신. Cargo.toml `publish = false` 명시(P-1 — 외부 소비자 부재의 기계 보증). 소비자 로직 무변경 | none | **first-increment** — seam 전체 기립, 자체 검증 포함 |
-| R-2 | Store가 `layout: Layout` 보유(root 이중화 제거), making-side 소비: objects.rs(blob·temp 경로) · buckets.rs(bucket_meta_path·OBJECTS_DIR) · store/mod.rs(blob_path 위임·meta_for 위임) · http/state.rs(.objects 생성 Layout 경유) | R-1 | |
+| R-2 | Store가 `layout: Layout` 보유(root 이중화 제거), making-side 소비: objects.rs(blob·temp 경로) · **atomic.rs(`write_atomic`의 temp 이름 → `layout::temp_name` — S-1)** · buckets.rs(bucket_meta_path·OBJECTS_DIR) · store/mod.rs(blob_path 위임·meta_for 위임) · http/state.rs(.objects 생성 Layout 경유) | R-1 | atomic writer = seam의 두 번째 소비자 |
 | R-3 | listing.rs → pointers_in_bucket 워커 소비(수동 DFS 루프 삭제) | R-2 | 에러 매핑은 단일 next() 지점 map_err(AppError::Internal) |
 | R-4 | reconcile: collect_referenced → pointers_all, `.objects` 스캔 → classify_objects_entry(O1 순서 준수), gc/corrupt/objects 경로 Layout 경유. run_once(root,…) 시그니처 불변 | R-1 | reconcile의 레이아웃 재유도 소멸 |
 | R-5 | KeyLocks::lock(bucket,key) 2인자 심화 — 포맷 locks.rs private, objects.rs 3곳 갱신 | R-2 | 같은 파일(objects.rs) 충돌 회피용 순서 |
@@ -200,5 +203,10 @@ seam.
 | ID | Finding | Severity | Decision | Reason | Action |
 |----|---------|----------|----------|--------|--------|
 | P-4 | P-2 reconciliation characterization이 심링크에 의존하지 않음(동어반복) | critical | Accept (인간 승인, 수동 r3) | real 포인터가 같은 sha를 참조해 reconcile 단언이 심링크 무시 회귀를 변별 못 함 — 데이터 손실급 회귀를 lock이 놓치는 구멍 | 심링크를 유일 포인터로 재구성(referenced:2·gc_pending:0·블롭 생존 단언), 커밋 c889f75, lock 갱신(baseline c889f75·94 green) |
+
+### Codex Structure Review — r1 (verdict: needs-attention · docs/reviews/arch-deepening-2026-07/structure-r1.json)
+| ID | Finding | Severity | Decision | Reason | Action |
+|----|---------|----------|----------|--------|--------|
+| S-1 | temp-경로 seam이 atomic writer를 흡수할 수 없음(atomic.rs:8이 미이관 `.tmp-` 생산자 — R-2 acceptance 원리적 불충족, 접두사 드리프트 시 중단된 atomic-write 파일이 temp 정리 회피) | high (Blocker) | Accept | 계획의 스미어 목록이 atomic.rs:8을 열거해 놓고 어떤 증분도 이관하지 않은 진짜 구멍 — Layout이 "온디스크 이름의 단일 소유자"라는 헌장을 못 지킴 | R-1 seam 보강: layout에 root-비의존 `temp_name(unique)` 추가(`.tmp-` 유일 저작점), `temp_blob_path`가 위임; R-2에 atomic.rs 이관 항목 + acceptance 추가(atomic writer = seam 두 번째 소비자); 계획 인터페이스·증분표 갱신 → structure r2 |
 
 ### Codex Plan Review — r3: clean — verdict approve, 0 findings. "P-4 is resolved. The symlink is now the sole metadata pointer to a distinct blob, so ignoring symlinks changes referenced from 2 to 1 and gc_pending from 0 to 1."

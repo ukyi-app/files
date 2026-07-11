@@ -96,9 +96,7 @@ impl Layout {
 
     /// 스트리밍 업로드용 temp blob 경로(`root/.objects/.tmp-<unique>`).
     pub fn temp_blob_path(&self, unique: &str) -> PathBuf {
-        self.root
-            .join(OBJECTS_DIR)
-            .join(format!("{TMP_PREFIX}{unique}"))
+        self.root.join(OBJECTS_DIR).join(temp_name(unique))
     }
 
     /// 버킷 메타(`root/<bucket>/.bucket.json`) 경로. 버킷명 검증 후 저작.
@@ -166,6 +164,13 @@ pub fn classify_objects_entry(name: &str) -> ObjectsEntry {
         return ObjectsEntry::Blob;
     }
     ObjectsEntry::Other
+}
+
+/// 임시 파일명(`.tmp-<unique>`) — 온디스크 temp 접두사의 유일한 저작점.
+/// 경로가 아닌 이름만 만든다: atomic::write_atomic처럼 임의 부모 디렉터리의
+/// 형제로 temp를 두는 소비자가 사용한다.
+pub(crate) fn temp_name(unique: &str) -> String {
+    format!("{TMP_PREFIX}{unique}")
 }
 
 /// 커밋 포인터 파일명 판별(W1). 디렉터리 여부는 워커가 file_type으로 별도 판정.
@@ -389,6 +394,11 @@ mod tests {
         assert_eq!(classify_objects_entry(&"a".repeat(65)), Other);
         assert_eq!(classify_objects_entry(&"g".repeat(64)), Other); // 비-hex
         assert_eq!(classify_objects_entry(".tmp-x.meta.json"), Temp); // 접두 우선
+    }
+
+    #[test]
+    fn temp_name_authors_prefix() {
+        assert_eq!(temp_name("u1"), ".tmp-u1");
     }
 
     #[test]
