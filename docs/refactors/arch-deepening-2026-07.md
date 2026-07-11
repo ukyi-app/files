@@ -8,7 +8,7 @@ issue-tracker: local
 behavior-baseline: c889f75ad3bc222ce4c13c7adfb103e54b87b534
 characterization-lock: done
 first-increment: [R-1]
-structure-gate: pending
+structure-gate: done
 increments: [R-1, R-2, R-3, R-4, R-5, R-6]
 spike-1:
 ---
@@ -208,5 +208,8 @@ seam.
 | ID | Finding | Severity | Decision | Reason | Action |
 |----|---------|----------|----------|--------|--------|
 | S-1 | temp-경로 seam이 atomic writer를 흡수할 수 없음(atomic.rs:8이 미이관 `.tmp-` 생산자 — R-2 acceptance 원리적 불충족, 접두사 드리프트 시 중단된 atomic-write 파일이 temp 정리 회피) | high (Blocker) | Accept | 계획의 스미어 목록이 atomic.rs:8을 열거해 놓고 어떤 증분도 이관하지 않은 진짜 구멍 — Layout이 "온디스크 이름의 단일 소유자"라는 헌장을 못 지킴 | R-1 seam 보강: layout에 root-비의존 `temp_name(unique)` 추가(`.tmp-` 유일 저작점), `temp_blob_path`가 위임; R-2에 atomic.rs 이관 항목 + acceptance 추가(atomic writer = seam 두 번째 소비자); 계획 인터페이스·증분표 갱신 → structure r2 |
+
+### Codex Structure Review — r2: clean — verdict approve, 0 findings, reviewedSha bcd86ce. "S-1 is resolved: temp_name centralizes prefix authoring, temp_blob_path delegates to it, and R-2 now requires atomic.rs as the real second consumer. Characterization tests were not weakened, and no new critical issue was introduced."
+(Codex 주: 샌드박스가 read-only라 cargo test를 독립 재실행하지 못함 — machine-owns-GREEN 원칙대로 lock testCmd 실행은 컨덕터 몫이며, 아래 구조-게이트 후 재검증에서 101 green 확인. verification 단계가 다시 전량 재실행한다.)
 
 ### Codex Plan Review — r3: clean — verdict approve, 0 findings. "P-4 is resolved. The symlink is now the sole metadata pointer to a distinct blob, so ignoring symlinks changes referenced from 2 to 1 and gc_pending from 0 to 1."
