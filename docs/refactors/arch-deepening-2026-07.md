@@ -66,6 +66,9 @@ impl Layout {
     pub fn bucket_meta_path(&self, bucket) -> Result<PathBuf, AppError>;
     pub fn gc_pending_path(&self) -> PathBuf;
     pub fn corrupt_dir(&self) -> PathBuf;
+    pub(crate) fn root(&self) -> &Path;                   // (A-1) 베이스 디렉터리 노출 — 경로 저작 아님.
+                                                          // 소비자 2: buckets.rs list_buckets의 루트 열거(영구),
+                                                          // listing.rs의 bucket_dir(R-3에서 소멸).
 
     // ── 이름 읽기 1: 커밋 포인터 워커 (지배 패턴 흡수) ──
     pub fn pointers_in_bucket(&self, bucket) -> Result<CommitPointerWalk, AppError>;
@@ -120,6 +123,17 @@ lib.rs의 `pub mod path`는 제거(→ `pub mod layout`) — crate 외부 소비
 (tests/·clients/ grep 검증, 2026-07-10). B10의 "보존"은 소비되는 표면(테스트가
 실제로 건너는 시그니처) 기준이다.
 
+**계획 개정 A-1**(2026-07-12, 인간 확정 — R-2 dispatch 전 발견): 위 인터페이스에
+`Layout::root()`를 추가한다. R-2가 `Store::root` 필드를 제거하는데 `buckets.rs`
+`list_buckets`의 루트 `read_dir` 열거(영구)와 `listing.rs`의 `bucket_dir` 계산
+(R-3에서 소멸)이 root 경로 자체를 요구하므로, 원안대로면 컴파일되지 않는다 —
+plan/structure 게이트가 놓친 공백. `root`는 온디스크 **이름·경로 규칙**이 아니라
+config 값이므로 노출해도 seam의 취지(`.objects`·`.tmp-`·`.bucket.json` 리터럴의
+단일 소유)는 유지되고, R-2가 제거하려는 **이중화**(Store와 Layout이 root를 각각
+보유)는 그대로 사라진다. 대안(Store가 root 병행 보유 / list_buckets의 루트 열거를
+layout으로 흡수)은 각각 증분 취지 위배 · 계획서 결정(`OBJECTS_DIR`를 "buckets.rs
+루트 스킵 1곳용"으로 pub(crate) 노출) 번복이라 기각.
+
 ## Behavior Contract
 
 증분 전 과정에서 변하면 안 되는 관측 행동. characterization이 핀하고 모든
@@ -169,7 +183,7 @@ seam.
 | id | what moves | blocked-by | notes |
 |---|---|---|---|
 | R-1 | `src/layout.rs` 신설: path.rs 흡수(fn·테스트 축자 이주) + Layout 경로 메서드 + classify_objects_entry + 상수 + CommitPointerWalk 워커 + 자체 단위 테스트(분류 테이블·round-trip 속성·워커 tempdir). path.rs 삭제, `crate::path::` 임포트 기계 갱신. Cargo.toml `publish = false` 명시(P-1 — 외부 소비자 부재의 기계 보증). 소비자 로직 무변경 | none | **first-increment** — seam 전체 기립, 자체 검증 포함 |
-| R-2 | Store가 `layout: Layout` 보유(root 이중화 제거), making-side 소비: objects.rs(blob·temp 경로) · **atomic.rs(`write_atomic`의 temp 이름 → `layout::temp_name` — S-1)** · buckets.rs(bucket_meta_path·OBJECTS_DIR) · store/mod.rs(blob_path 위임·meta_for 위임) · http/state.rs(.objects 생성 Layout 경유) | R-1 | atomic writer = seam의 두 번째 소비자 |
+| R-2 | Store가 `layout: Layout` 보유(root 이중화 제거), making-side 소비: objects.rs(blob·temp 경로) · **atomic.rs(`write_atomic`의 temp 이름 → `layout::temp_name` — S-1)** · buckets.rs(bucket_meta_path·OBJECTS_DIR·root 열거) · store/mod.rs(blob_path 위임·meta_for 위임) · http/state.rs(.objects 생성 Layout 경유) + **`Layout::root()` 추가(A-1)** | R-1 | atomic writer = seam의 두 번째 소비자 |
 | R-3 | listing.rs → pointers_in_bucket 워커 소비(수동 DFS 루프 삭제) | R-2 | 에러 매핑은 단일 next() 지점 map_err(AppError::Internal) |
 | R-4 | reconcile: collect_referenced → pointers_all, `.objects` 스캔 → classify_objects_entry(O1 순서 준수), gc/corrupt/objects 경로 Layout 경유. run_once(root,…) 시그니처 불변 | R-1 | reconcile의 레이아웃 재유도 소멸 |
 | R-5 | KeyLocks::lock(bucket,key) 2인자 심화 — 포맷 locks.rs private, objects.rs 3곳 갱신 | R-2 | 같은 파일(objects.rs) 충돌 회피용 순서 |
