@@ -218,6 +218,9 @@ seam.
 | F-8 | buckets.rs list_buckets의 `.objects` 스킵 — classify_root_entry는 미구축 결정(소비자 1), OBJECTS_DIR 상수로 충족 | 기록만 |
 | F-9 | 손상 커밋 포인터 은폐: `Store::head`가 파싱 불가 meta JSON을 `NotFound`로 매핑(objects.rs:116)하고, reconcile은 손상 **블롭**만 격리하고 손상 **포인터**는 격리하지 않아 해당 키가 영구 비가시·미복구(R-2 중 발견, 현행 스위트가 핀하는 기존 행동이라 보존) | gated-bugfix |
 | F-10 | `list_buckets`가 루트 `read_dir` 에러를 `Ok(vec![])`로 삼킴(buckets.rs:25) — 권한 오류·데이터 디렉터리 부재가 "버킷 0개"로 보고됨(R-2 중 발견, 기존 행동 보존) | gated-bugfix |
+| F-11 | 비-UTF-8 파일명이 키를 조용히 손상: key 복원이 `to_string_lossy()`(layout.rs) 경유라 U+FFFD를 품은 키가 나오고, 그 키로 GET하면 404 — 목록과 실물이 어긋남(R-3 중 발견, R-1이 워커로 이관하며 승계한 기존 행동) | gated-bugfix |
+| F-12 | 손상 meta의 무-신호 소멸: 읽기·파싱 실패가 로그·카운터 없이 `continue`라 bit-rot된 `*.meta.json`이 list에서 그냥 사라짐(B5 조용한 skip 규칙 자체는 의도이나 관측 훅이 전무) | 관측성 후속 |
+| F-13 | 하위 디렉터리 1개의 `EACCES`가 목록 전체를 `Internal`(500)로 실패시킴 — 부분 목록으로 degrade하지 않음. 워커를 공유하는 reconcile(R-4)도 같은 all-or-nothing 승계 | gated-bugfix(설계 판단 필요) |
 
 ## Review Decision Log
 
@@ -242,3 +245,21 @@ seam.
 (Codex 주: 샌드박스가 read-only라 cargo test를 독립 재실행하지 못함 — machine-owns-GREEN 원칙대로 lock testCmd 실행은 컨덕터 몫이며, 아래 구조-게이트 후 재검증에서 101 green 확인. verification 단계가 다시 전량 재실행한다.)
 
 ### Codex Plan Review — r3: clean — verdict approve, 0 findings. "P-4 is resolved. The symlink is now the sole metadata pointer to a distinct blob, so ignoring symlinks changes referenced from 2 to 1 and gc_pending from 0 to 1."
+
+### 컨덕터측 증분 리뷰(`/code-review` 2축 — 게이트가 아니라 증분별 심사)
+
+R-1 first-increment는 structure 게이트가 심사했다(위). R-2 이후의 증분은 컨덕터가
+증분 시작 SHA를 fixed point로 2축 리뷰하고, 그 판정을 여기 남긴다 — 릴리스 게이트가
+같은 논점을 재론하지 않도록.
+
+| ID | 증분 | Finding | Decision | Reason |
+|----|------|---------|----------|--------|
+| A-1 | R-2 (dispatch 전) | `Store::root` 제거 시 buckets.rs 루트 열거(영구)·listing.rs bucket_dir(R-3에서 소멸)이 root를 잃어 컴파일 불가 — plan·structure 게이트가 놓친 인터페이스 공백 | **Accept**(인간 확정) | root는 온디스크 이름 규칙이 아니라 config 값 → 노출해도 seam 취지 불변, 제거 대상인 **이중화**만 소멸. `Layout::root()` 추가 |
+| S-2 | R-2 (Standards) | R-2가 `safe_object_path`·`meta_path`의 마지막 외부 소비자를 제거 → 소비자 0인 **`pub` 경로-저작 함수**로 잔존 | **Accept** | Layout을 우회하는 **공개** 경로-저작 통로 = CONTEXT.md 위반 + Target shape 자유함수 목록 미포함 + YAGNI 규칙. → `pub(crate)`(**A-2**). B10 무저촉(보존은 소비되는 표면 기준, 외부 소비자 0) |
+| — | R-2 (Standards) | `Store::meta_for` 사적 1줄 위임 = 경미한 Middle Man | **Reject** | 호출부 5곳 간결성 유지가 이득. 제거하면 layout 체인이 store 전역으로 확산. 리뷰어도 coin-flip 표기 |
+| — | R-2 (Spec) | 대상 파일의 **doc 주석**에 `.objects` 등 리터럴 잔존 | **Reject** | 이름을 저작하지 않는 서술 — 온디스크 계약을 드리프트시킬 수 없다(S-1의 요지는 **저작점** 단일화). layout.rs도 같은 방식으로 상수를 문서화 |
+| — | R-3 (Standards) | R-3이 `valid_bucket`·`valid_key`의 마지막 `use`를 제거 → layout.rs 밖 코드 소비자 0인데 여전히 `pub`. A-2를 따라 `pub(crate)`로 좁힐 것인가 | **Reject** | A-2와 결정적으로 다르다: 이 둘은 **Target shape가 `pub fn`으로 명시 핀**했고(`safe_object_path`/`meta_path`는 목록에 없었다), **순수 검증자**라 CONTEXT.md가 금하는 "Layout 우회 경로 저작"이 원천 불가능하다. 게이트 승인된 핀을 필요 없이 뒤집지 않는다 |
+| — | R-3 (Standards) | `src/http/internal/files.rs:28`이 R-1에서 삭제된 `src/path.rs`를 doc 주석에서 참조 | **Accept** | 죽은 모듈 참조. R-3 범위가 아닌 R-1 잔재이므로 별도 커밋 `d764629`로 분리 수정 |
+
+R-2 Spec 축·R-3 Spec 축 모두 **clean**(Blocker/Major 0). 증분별 상세 근거는 각
+`docs/increments/arch-deepening-2026-07/R-*.md`의 Result에 있다.
