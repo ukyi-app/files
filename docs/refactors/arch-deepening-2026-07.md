@@ -216,6 +216,8 @@ seam.
 | F-6 | authz seam(후보 3) · 쓰기 경로 이중화(후보 4) · 응답 헤더 응집(후보 5) · OpenAPI C3(후보 6) | 후속 후보 풀 |
 | F-7 | 성능 후보군: dedup 전체 재독 · blocking statvfs · 카탈로그 N+1 · reconcile 전량 스캔 · KeyLocks 무한 성장 | gated-perf(metric 선언 시) |
 | F-8 | buckets.rs list_buckets의 `.objects` 스킵 — classify_root_entry는 미구축 결정(소비자 1), OBJECTS_DIR 상수로 충족 | 기록만 |
+| F-9 | 손상 커밋 포인터 은폐: `Store::head`가 파싱 불가 meta JSON을 `NotFound`로 매핑(objects.rs:116)하고, reconcile은 손상 **블롭**만 격리하고 손상 **포인터**는 격리하지 않아 해당 키가 영구 비가시·미복구(R-2 중 발견, 현행 스위트가 핀하는 기존 행동이라 보존) | gated-bugfix |
+| F-10 | `list_buckets`가 루트 `read_dir` 에러를 `Ok(vec![])`로 삼킴(buckets.rs:25) — 권한 오류·데이터 디렉터리 부재가 "버킷 0개"로 보고됨(R-2 중 발견, 기존 행동 보존) | gated-bugfix |
 
 ## Review Decision Log
 
