@@ -228,7 +228,9 @@ seam.
 | F-18 | `KeyLocks`의 락 맵이 무한 증가 — 엔트리가 한 번도 제거되지 않아 프로세스 수명 동안 distinct `bucket/key`가 영구 잔류(장수 홈랩 프로세스에서 실질 누수). 수정에 refcount eviction 필요(경합 까다로움) | gated-refactor 후속(F-7 성능군과 인접) |
 | F-19 | `put_stream` 성공 후 `rename`/`fsync_dir` 실패 시 `?` 조기 반환이 temp를 정리하지 않아 `.tmp-*` 잔류(reconcile grace 정리에 의존) | gated-bugfix |
 | F-20 | blob 소실 시 에러 불일치: `open`은 `NotFound`(404), `get_bytes`는 `Internal`(500) — head 확인과 read 사이 TOCTOU 창에서 같은 원인에 다른 상태 코드 | gated-bugfix |
-| F-21 | 공개 표면 예약 경로의 **응답 비대칭**(R-6 실측): `PUT /healthz/foo` → 405 + `Allow: GET,HEAD`(라우트 존재를 광고) vs `PUT /api/x` → 404. 예약 경로 전체를 균일 404로 만드는 편이 표면 비노출 관점에서 더 안전하나, 이는 **의도적 행동 변경**이므로 gated-refactor가 아니라 별도 파이프라인 소관. 또한 `/healthz`·`/readyz` 정확 일치 라우트는 현재 wire에서 no-op(제거해도 동일) — 정리 후보 | gated-pipeline(행동 변경) |
+| F-21 | 공개 표면 예약 경로의 **응답 비대칭**(R-6 실측): `PUT /healthz/foo` → 405 + `Allow: GET,HEAD`(라우트 존재를 광고) vs `PUT /api/x` → 404. 예약 경로 전체를 균일 404로 만드는 편이 표면 비노출 관점에서 더 안전하나, 이는 **의도적 행동 변경**이므로 gated-refactor가 아니라 별도 파이프라인 소관. 또한 `/healthz`·`/readyz` 정확 일치 라우트는 현재 wire에서 no-op(제거해도 동일) — 정리 후보. **R-6이 이 행동을 테스트로 핀했으므로, 바꾸려면 이제 의도적·가시적으로 해야 한다** | gated-pipeline(행동 변경) |
+| F-22 | 같은 "없음"인데 404 바디가 갈린다: `GET /healthz/foo` → `{"error":"not_found"}` JSON(핸들러의 `AppError::NotFound`), `GET /api/x/y` → 빈 바디(`any(not_found)`의 맨 `StatusCode`). 클라이언트가 바디 파싱으로 예약 경로의 종류를 구분할 수 있다 | gated-pipeline(행동 변경) |
+| F-23 | `catalog`의 `escape()`가 URL을 HTML 이스케이프로만 처리(public.rs) — 현재는 `segment_ok`의 문자 제한 덕에 안전하나, 방어가 layout.rs의 검증에만 의존하는 **원거리 결합**. 검증이 느슨해지면 `href` 컨텍스트에서 부족 | 관측만(검증 완화 시 재평가) |
 
 ## Review Decision Log
 
