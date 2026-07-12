@@ -14,6 +14,11 @@ const TMP_PREFIX: &str = ".tmp-";
 const GC_PENDING_NAME: &str = ".gc-pending.json";
 /// bit-rot 격리 디렉터리명 — 온디스크 리터럴의 단일 정의.
 const CORRUPT_DIR_NAME: &str = ".corrupt";
+/// GC 무덤 접두사 — 온디스크 리터럴의 단일 정의.
+/// `.objects` **직속 평면 이름**(`mkdir` 없음 → 빈 디렉터리 잔재 불가)이고 `.tmp-`가 **아니다**
+/// (temp로 오분류돼 만료 삭제되는 경로를 원천 차단). 이름이 sha를 품으므로 복구가 가능하다.
+/// 구 바이너리의 `classify_objects_entry`는 이 이름을 `Other`로 떨어뜨린다 → 롤백해도 삭제되지 않는다.
+const GRAVE_PREFIX: &str = ".gc-grave-";
 
 const RESERVED_SUFFIXES: &[&str] = &[META_SUFFIX, BUCKET_META_NAME];
 
@@ -121,6 +126,11 @@ impl Layout {
         self.root.join(OBJECTS_DIR).join(CORRUPT_DIR_NAME)
     }
 
+    /// GC 무덤 경로(`root/.objects/.gc-grave-<sha>`) — `.objects` 직속 평면 파일.
+    pub(crate) fn grave_path(&self, sha: &str) -> PathBuf {
+        self.root.join(OBJECTS_DIR).join(grave_name(sha))
+    }
+
     /// 버킷 하나의 커밋 포인터 워크. `valid_bucket` 실패 시 I/O 전에 Err.
     /// 버킷 dir 부재는 빈 워크(첫 next()가 Ok(None)).
     pub fn pointers_in_bucket(&self, bucket: &str) -> Result<CommitPointerWalk, AppError> {
@@ -154,19 +164,38 @@ pub enum ObjectsEntry {
     Reserved,
     Temp,
     Blob,
+    Grave,
     Other,
 }
 
-/// Reserved = `.gc-pending.json`/`.corrupt` 정확 일치; Temp = `.tmp-` 접두(우선);
-/// Blob = 64자 ascii hex(대문자 허용 — 정규화 금지); 그 외 Other.
+/// 64자 ascii hex 여부(정규화 없음 — 대문자 허용).
+fn is_sha_name(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// 무덤 이름에서 sha 추출. 접두사가 맞고 나머지가 sha 모양일 때만 Some.
+pub(crate) fn grave_sha(name: &str) -> Option<&str> {
+    name.strip_prefix(GRAVE_PREFIX).filter(|s| is_sha_name(s))
+}
+
+/// 무덤 이름 저작(`.gc-grave-<sha>`) — 온디스크 무덤 접두사의 유일한 저작점.
+pub(crate) fn grave_name(sha: &str) -> String {
+    format!("{GRAVE_PREFIX}{sha}")
+}
+
+/// Reserved = `.gc-pending.json`/`.corrupt` 정확 일치; Grave = `.gc-grave-<64hex>`;
+/// Temp = `.tmp-` 접두(우선); Blob = 64자 ascii hex(대문자 허용 — 정규화 금지); 그 외 Other.
 pub fn classify_objects_entry(name: &str) -> ObjectsEntry {
     if name == GC_PENDING_NAME || name == CORRUPT_DIR_NAME {
         return ObjectsEntry::Reserved;
     }
+    if grave_sha(name).is_some() {
+        return ObjectsEntry::Grave;
+    }
     if name.starts_with(TMP_PREFIX) {
         return ObjectsEntry::Temp;
     }
-    if name.len() == 64 && name.bytes().all(|b| b.is_ascii_hexdigit()) {
+    if is_sha_name(name) {
         return ObjectsEntry::Blob;
     }
     ObjectsEntry::Other
@@ -400,6 +429,26 @@ mod tests {
         assert_eq!(classify_objects_entry(&"a".repeat(65)), Other);
         assert_eq!(classify_objects_entry(&"g".repeat(64)), Other); // 비-hex
         assert_eq!(classify_objects_entry(".tmp-x.meta.json"), Temp); // 접두 우선
+        // 무덤: `.gc-grave-<64hex>`만 Grave. temp도 blob도 아니다(오분류 삭제 차단).
+        assert_eq!(classify_objects_entry(&grave_name(&lower)), Grave);
+        assert_eq!(classify_objects_entry(&grave_name(&upper)), Grave);
+        assert_eq!(classify_objects_entry(".gc-grave-junk"), Other); // sha 아님
+        assert_eq!(classify_objects_entry(".gc-grave-"), Other);
+        assert_eq!(classify_objects_entry(&grave_name(&"a".repeat(63))), Other);
+    }
+
+    #[test]
+    fn grave_name_round_trips() {
+        let sha = "b".repeat(64);
+        let name = grave_name(&sha);
+        assert_eq!(name, format!(".gc-grave-{sha}"));
+        assert_eq!(grave_sha(&name), Some(sha.as_str()));
+        // 비-무덤 이름은 sha를 내지 않는다
+        assert_eq!(grave_sha(&sha), None);
+        assert_eq!(grave_sha(".tmp-x"), None);
+        assert_eq!(grave_sha(".gc-grave-nope"), None);
+        // 무덤 이름은 `.tmp-` 이름공간과 서로소다
+        assert!(!name.starts_with(".tmp-"));
     }
 
     #[test]
@@ -418,6 +467,10 @@ mod tests {
             Path::new("/data/.objects/.gc-pending.json")
         );
         assert_eq!(l.corrupt_dir(), Path::new("/data/.objects/.corrupt"));
+        assert_eq!(
+            l.grave_path("abc"),
+            Path::new("/data/.objects/.gc-grave-abc")
+        );
         assert_eq!(
             l.bucket_meta_path("b").unwrap(),
             Path::new("/data/b/.bucket.json")

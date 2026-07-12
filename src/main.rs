@@ -27,25 +27,28 @@ async fn main() -> anyhow::Result<()> {
     let public_port = cfg.public_port;
     let gc_grace = Duration::from_secs(cfg.gc_grace_secs);
     let reconcile_interval = Duration::from_secs(cfg.gc_grace_secs);
-    let data_dir = cfg.data_dir.clone();
+    // GC 무덤 정산 대기의 **유일한 상계**. `upload_timeout`에서 파생한다(새 env 노브 없음).
+    // cfg가 build_state로 move되기 **전에** 뽑는다(gc_grace와 동형). 기본값: 600s + 60s = 660s.
+    let settle_timeout = reconcile::settle_timeout_from(Duration::from_secs(cfg.upload_timeout_secs));
 
-    let state = http::build_state(cfg)?;
+    let state = http::build_state(cfg)?; // ← 여기서 cfg가 move된다(그리고 .objects를 만든다)
 
-    // 부팅 시 reconciliation 1회
-    if let Err(e) = reconcile::run_once(&data_dir, gc_grace).await {
+    // 부팅 시 reconciliation 1회. ⚠ **put과 같은 Store**를 넘긴다(D-1/D-3) — 핀 등록부는
+    // in-process이고, 같은 root로 Store를 새로 만들면 등록부가 갈라져 버그가 부활한다.
+    if let Err(e) = reconcile::run_once(&state.store, gc_grace, settle_timeout).await {
         tracing::warn!(error = %e, "boot reconciliation failed");
     }
 
     // 주기 reconciliation(저속 스크럽 포함). grace-period GC라 진행 중 업로드와 안전 공존.
     {
-        let dd = data_dir.clone();
+        let s = state.store.clone(); // 같은 Arc 등록부를 공유(Store::clone)
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(reconcile_interval);
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             tick.tick().await; // 즉시 발생하는 첫 tick은 boot에서 이미 수행
             loop {
                 tick.tick().await;
-                match reconcile::run_once(&dd, gc_grace).await {
+                match reconcile::run_once(&s, gc_grace, settle_timeout).await {
                     Ok(stats) => tracing::info!(?stats, "reconcile"),
                     Err(e) => tracing::warn!(error = %e, "reconcile failed"),
                 }

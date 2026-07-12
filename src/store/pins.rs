@@ -1,0 +1,714 @@
+//! blob 핀 등록부 — reconcile GC ↔ dedup put 경합의 seam.
+//!
+//! ## 불변식
+//! P1 `pin()`은 절대 블록하지 않는다(상호배제 0 — put은 GC를 기다리지 않는다).
+//! P2 **보호 술어는 `landed` 하나뿐이다.**
+//!      landed(sha) = 이 패스 동안 **커밋 rename이 Ok를 반환한** sha (sticky)
+//!      live(sha)   = 지금 존재하는 핀 = **결말이 아직 확정되지 않은** put → **대기 조건**이지 보호가 아니다
+//!    GC 보호 술어: restore ⇔ landed(sha)   ← 코호트 대기가 끝난 **뒤에만** 평가된다
+//! P3 **커밋은 취소 불가다.** `PinGuard`는 커밋 클로저가 **소유**하며, Drop은 rename·마킹·fsync가
+//!    모두 끝난 뒤 그 클로저 안에서 실행된다 → "핀이 죽었는데 rename이 나중에 착지"는 **불가능**.
+//!    (tokio: 시작된 `spawn_blocking` 태스크는 abort 불가 — 퓨처를 드롭해도 클로저는 끝까지 실행된다.)
+//!    ⇒ **핀의 죽음 = 그 put의 종료 결과(terminal outcome) 확정**이며, 결과는 landed에 이미 반영돼 있다.
+//! P4 보호 판정 API는 **`Graved::settle(self)` 하나뿐**이다. `Graved`는 **`PassGuard::grave()`의
+//!    blob→무덤 rename이 성공했을 때만** 태어나고(private 필드·같은 모듈 외 생성자 0·derive 0),
+//!    자기 `sha`와 **무덤 시점 코호트**를 품는다 → 판정이 **그 전이·그 sha에** 바인딩된다.
+//!    `BlobPins`에 sha로 조회하는 **공개 술어는 존재하지 않는다**(`protected()` 없음).
+//!    ⇒ `reconcile.rs`는 **훅과 `grave()`만** 볼 수 있고, **보호 상태를 읽을 수단이 아예 없다**
+//!      → 사전확인 뮤턴트는 `reconcile.rs`에서 **표현 불가**다.
+//! P5 `pass_live` 플래그는 `PassGuard`(Drop 보유)가 **fallible op 이전에** 획득한다 → `?` 누수 0.
+//! P6 핀에는 **단조 증가 id**가 붙는다. 무덤 rename **직후** 그 sha의 live id를 스냅샷한 것이 **코호트**다.
+//!    코호트는 **고정·유한**하며, 무덤 **이후**에 생긴 핀은 코호트에 들어오지 않는다
+//!    (그 put은 `blob_path`에서 ENOENT를 보고 바이트를 재기록한다 → **자급자족**).
+//! P7 **대기는 유한하며 fail-CLOSED다.** 멈춘 파일시스템 연산은 코호트 멤버를 영원히 살려 둘 수 있고
+//!    `upload_timeout`은 **호출자 퓨처를 드롭할 뿐** blocking 클로저를 죽이지 못한다
+//!    → **`upload_timeout`은 대기의 상계가 아니다**. `settle()`은 셋 중 먼저 오는 것에서 깨어난다:
+//!      (a) `landed(sha)` 확정 → 즉시 복원(대기 0) · (b) 코호트 드레인 → `landed`로 판정 ·
+//!      (c) `settle_timeout` 소진 → **fail-CLOSED**: 무덤을 정본으로 복원 · tombstone 유지 ·
+//!          `gc_deleted` 무증가 · `tracing::error!`.
+//!    `settled: Notify`는 **핀 drop**과 **`landed` 삽입** 양쪽에서 울린다 → (a)가 즉시 발화한다.
+//!
+//! ## ⚠ B-1에서의 위치
+//! `Graved`·`settle`·`grave`는 **아직 아무도 부르지 않는다**(GC 삭제/격리 분기는 기존 그대로).
+//! 핀과 `landed`는 **기록되지만 읽히지 않는다**. 아래 다섯 항목에 붙은 **dead-code 허용 속성**이
+//! 그 사실의 표지이며, **배선과 함께 사라진다** — 넷은 B-2(GC 삭제 분기가 `grave`/`settle`을 부른다),
+//! `PassGuard::recovered`의 하나는 B-3(관측성 배선)이 제거한다. **그 제거가 곧 배선의 증거다.**
+
+use super::atomic;
+use super::Store;
+use crate::layout::Layout;
+use futures::future::BoxFuture;
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tokio::sync::OwnedMutexGuard;
+
+// ── 결정적 배리어 ────────────────────────────────────────────────────────────
+// 배리어는 **프로덕션 코드와 같은 경로**를 지난다. `BlobPins`가 소유하고(prod = 전부 None),
+// put 경로와 GC 경로가 **같은 등록부의 같은 훅**을 본다 → `#[cfg(test)]` 코드 경로 분기가 없다.
+
+type AsyncHook = Arc<dyn Fn(&str) -> BoxFuture<'static, ()> + Send + Sync>;
+type SyncHook = Arc<dyn Fn(&str) + Send + Sync>;
+type FailHook = Arc<dyn Fn(&str) -> std::io::Result<()> + Send + Sync>;
+
+/// 필드는 정확히 7개다. 늘리지 마라.
+#[derive(Clone, Default)]
+pub(crate) struct Hooks {
+    post_observe: Option<AsyncHook>,
+    during_collect: Option<AsyncHook>,
+    pre_grave: Option<AsyncHook>,
+    post_grave: Option<AsyncHook>,
+    in_commit_pre_rename: Option<SyncHook>,
+    in_commit_post_landed: Option<SyncHook>,
+    restore_io: Option<FailHook>,
+}
+
+impl Hooks {
+    pub(crate) async fn post_observe(&self, sha: &str) {
+        if let Some(h) = &self.post_observe {
+            h(sha).await;
+        }
+    }
+    pub(crate) async fn during_collect(&self, sha: &str) {
+        if let Some(h) = &self.during_collect {
+            h(sha).await;
+        }
+    }
+    #[allow(dead_code)] // B-2에서 제거 — 그때 GC 루프에 배선된다
+    pub(crate) async fn pre_grave(&self, sha: &str) {
+        if let Some(h) = &self.pre_grave {
+            h(sha).await;
+        }
+    }
+    pub(crate) async fn post_grave(&self, sha: &str) {
+        if let Some(h) = &self.post_grave {
+            h(sha).await;
+        }
+    }
+    pub(crate) fn in_commit_pre_rename(&self, sha: &str) {
+        if let Some(h) = &self.in_commit_pre_rename {
+            h(sha);
+        }
+    }
+    pub(crate) fn in_commit_post_landed(&self, sha: &str) {
+        if let Some(h) = &self.in_commit_post_landed {
+            h(sha);
+        }
+    }
+    pub(crate) fn restore_io(&self, sha: &str) -> std::io::Result<()> {
+        match &self.restore_io {
+            Some(h) => h(sha),
+            None => Ok(()),
+        }
+    }
+}
+
+// ── 등록부 ───────────────────────────────────────────────────────────────────
+
+#[derive(Clone, Default)]
+pub(crate) struct BlobPins {
+    /// 동기 Mutex — 임계구역이 await를 걸치지 않는다(P1).
+    inner: Arc<Mutex<Inner>>,
+    /// **두 곳에서** 울린다: ① `PinGuard::drop`(코호트 드레인 진행) ② `landed` 삽입(보호 확정 → 즉시 깨움).
+    settled: Arc<tokio::sync::Notify>,
+    /// 프로세스 내 라이브 패스 ≤ 1.
+    pass_lock: Arc<tokio::sync::Mutex<()>>,
+    /// 결정적 배리어. prod = 전부 None.
+    hooks: Hooks,
+}
+
+#[derive(Default)]
+struct Inner {
+    /// 단조 증가 핀 id (P6).
+    next_id: u64,
+    /// sha → 살아있는 핀 id 집합.
+    live: HashMap<String, HashSet<u64>>,
+    /// 커밋 rename이 Ok를 반환한 sha (sticky, 패스 스코프).
+    landed: HashSet<String>,
+    pass_live: bool,
+}
+// ※ `armed` 맵도, `touched := armed 스냅샷` 시드도 **없다**.
+
+impl BlobPins {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// 배리어 주입 생성자(테스트 전용). prod은 `new()`만 쓴다.
+    #[cfg(test)]
+    pub(crate) fn with_hooks(hooks: Hooks) -> Self {
+        Self {
+            hooks,
+            ..Self::default()
+        }
+    }
+
+    /// 배리어 전용 접근자.
+    pub(crate) fn hooks(&self) -> &Hooks {
+        &self.hooks
+    }
+
+    /// blob을 **보기 전에** 잡는다. 동기·무대기. 새 id를 발급한다.
+    pub(crate) fn pin(&self, sha: &str) -> PinGuard {
+        let mut g = self.inner.lock().unwrap();
+        g.next_id += 1;
+        let id = g.next_id;
+        g.live.entry(sha.to_owned()).or_default().insert(id);
+        PinGuard {
+            pins: self.clone(),
+            sha: sha.to_owned(),
+            id,
+        }
+    }
+
+    // ── 아래는 **private**이다(`pub(crate)` 아님) → `reconcile.rs`는 술어를 부를 수조차 없다. ──
+
+    fn enter_pass(&self) {
+        let mut g = self.inner.lock().unwrap();
+        g.pass_live = true;
+        g.landed.clear();
+    }
+
+    fn exit_pass(&self) {
+        let mut g = self.inner.lock().unwrap();
+        g.pass_live = false;
+        g.landed.clear();
+    }
+
+    /// 무덤 rename **직후** 호출된다. 그 시점의 live id 집합 = **코호트**.
+    fn cohort_at_grave(&self, sha: &str) -> HashSet<u64> {
+        self.inner
+            .lock()
+            .unwrap()
+            .live
+            .get(sha)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// **유한 대기.** 셋 중 **먼저 오는 것**에서 깨어난다 — 무한 대기가 표현 불가하다.
+    /// `landed`가 **이미** true면 첫 검사에서 즉시 `Landed`(await 0회) — 코호트를 기다리지 않는다.
+    /// 코호트가 비어 있으면 첫 검사에서 즉시 `Drained`(await 0회) — 정상 GC의 fast path.
+    async fn await_settlement(
+        &self,
+        sha: &str,
+        cohort: &HashSet<u64>,
+        budget: Duration,
+    ) -> Settlement {
+        let deadline = tokio::time::Instant::now() + budget;
+        loop {
+            let notified = self.settled.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable(); // **검사 이전에** 등록 → lost wakeup 불가
+            {
+                // 동기 Mutex는 await를 **절대 걸치지 않는다**(P1 불변 유지)
+                let g = self.inner.lock().unwrap();
+                // ① 보호 **확정**. 나머지 코호트의 결말은 판정을 바꿀 수 없다(landed는 sticky·단일 술어)
+                //    → 더 기다리는 것은 순손해다(그 객체가 그동안 404다).
+                if g.landed.contains(sha) {
+                    return Settlement::Landed;
+                }
+                // ② 코호트 전원 종료 = 모든 멤버의 종료 결과 확정 → landed가 정확히 반영돼 있다(P3)
+                if g.live.get(sha).is_none_or(|ids| ids.is_disjoint(cohort)) {
+                    return Settlement::Drained;
+                }
+            }
+            // ③ **유한.** 예산이 끊기면 fail-CLOSED로 빠진다 — 멈춘 핀은 GC를 정지시킬 수 없다.
+            if tokio::time::timeout_at(deadline, notified).await.is_err() {
+                return Settlement::TimedOut;
+            }
+        }
+    }
+
+    /// **유일한 보호 술어.** 코호트 결말이 확정된 뒤에만 읽힌다.
+    fn landed(&self, sha: &str) -> bool {
+        self.inner.lock().unwrap().landed.contains(sha)
+    }
+}
+
+/// 대기가 **왜** 끝났는가. `pins.rs` private — `reconcile.rs`는 이 타입을 볼 수 없다(P4 봉인).
+enum Settlement {
+    Landed,
+    Drained,
+    TimedOut,
+}
+
+// ── 핀 ───────────────────────────────────────────────────────────────────────
+
+pub(crate) struct PinGuard {
+    pins: BlobPins,
+    sha: String,
+    id: u64,
+}
+
+impl PinGuard {
+    /// 관측은 핀을 통해서만(순서 = 타입). sha가 핀에서 나오므로 "핀은 A, 검사는 B" 뮤턴트도 표현 불가.
+    pub(crate) async fn blob_intact(&self, layout: &Layout) -> bool {
+        let ok = matches!(
+            tokio::fs::read(layout.blob_path(&self.sha)).await,
+            Ok(b) if hex::encode(Sha256::digest(&b)) == self.sha
+        );
+        self.pins.hooks.post_observe(&self.sha).await; // 결정적 배리어
+        ok
+    }
+
+    /// **커밋 = 이 핀을 소비하는 무취소 연산.**
+    /// 단일 blocking 클로저가 가드를 **소유**한다 → 호출자 취소(upload_timeout·disconnect)가
+    /// in-flight rename에서 핀을 떼어낼 수 없다.
+    pub(crate) async fn commit_pointer(self, target: PathBuf, bytes: Vec<u8>) -> std::io::Result<()> {
+        tokio::task::spawn_blocking(move || {
+            let me = self; // 가드를 클로저가 소유
+            let staged = atomic::stage_blocking(&target, &bytes)?; // ← 여기까지의 실패 = **흔적 0**
+            me.pins.hooks.in_commit_pre_rename(&me.sha); // 동기 훅
+            staged.commit_blocking(|| {
+                // ← rename Ok 직후에만
+                let landed_now = {
+                    let mut g = me.pins.inner.lock().unwrap();
+                    // **착지 흔적**. insert의 반환값 = 이번에 처음 들어갔는가(전이에서만 깨운다)
+                    g.pass_live && g.landed.insert(me.sha.clone())
+                }; // ← 락을 **먼저 놓고** 깨운다(PinGuard::drop과 같은 규율)
+                   // 보호가 **확정**됐다 → 코호트 대기 중인 settle()을 **즉시** 깨운다.
+                   // notify_waiters()는 동기·논블로킹이고 런타임 컨텍스트를 요구하지 않는다.
+                if landed_now {
+                    me.pins.settled.notify_waiters();
+                }
+                // ⚠ notify_waiters()가 이 훅보다 **먼저** 호출된다 — 순서를 뒤집지 마라(B-2 T-P4b-2).
+                me.pins.hooks.in_commit_post_landed(&me.sha); // rename **이후**
+            })
+            // me(PinGuard) drop: rename·마킹·fsync가 **전부 끝난 뒤** live[sha]에서 id 제거 + notify
+        })
+        .await
+        .expect("join")
+    }
+}
+
+impl Drop for PinGuard {
+    /// **핀의 죽음 = 이 put의 종료 결과 확정**(P3). `landed`는 건드리지 않는다.
+    fn drop(&mut self) {
+        {
+            let mut g = self.pins.inner.lock().unwrap();
+            if let Some(ids) = g.live.get_mut(&self.sha) {
+                ids.remove(&self.id);
+                if ids.is_empty() {
+                    g.live.remove(&self.sha);
+                }
+            }
+        } // ← 락을 **먼저 놓고** 깨운다
+        self.pins.settled.notify_waiters(); // 동기·논블로킹 → blocking 클로저 안에서도 안전
+    }
+}
+
+// ── 패스 ─────────────────────────────────────────────────────────────────────
+
+pub(crate) struct PassGuard {
+    pins: BlobPins,
+    _pass: OwnedMutexGuard<()>,
+    layout: Layout,
+    refs: HashSet<String>,
+    recovered: usize,
+    /// 호출자가 **명시**한다. 기본값을 숨기지 않는다 — 이것이 대기의 **유일한 상계**다.
+    settle_timeout: Duration,
+}
+
+impl PassGuard {
+    /// **패스 순서의 유일한 소유자.** P5: 플래그를 든 가드를 **fallible op 이전에** 만든다.
+    pub(crate) async fn begin(store: &Store, settle_timeout: Duration) -> std::io::Result<Self> {
+        let _pass = store.pins().pass_lock.clone().lock_owned().await;
+        let mut me = Self {
+            pins: store.pins().clone(),
+            _pass,
+            layout: store.layout().clone(),
+            refs: HashSet::new(),
+            recovered: 0,
+            settle_timeout,
+        };
+        me.pins.enter_pass(); // pass_live = true; landed.clear()
+        // ↓ 이 아래 모든 `?`는 me(Drop 보유)를 통과한다 → pass_live/landed 누수 불가
+        let recovered = super::reconcile::recover_graves(&me.layout).await?; // collect **이전**
+        me.recovered = recovered;
+        let refs = super::reconcile::collect_referenced(&me.layout, me.pins.hooks()).await?;
+        me.refs = refs;
+        Ok(me)
+    }
+
+    pub(crate) fn referenced(&self) -> &HashSet<String> {
+        &self.refs
+    }
+
+    #[allow(dead_code)] // B-3에서 제거 — 그때 관측성(tracing)이 이것을 소비한다
+    pub(crate) fn recovered(&self) -> usize {
+        self.recovered
+    }
+
+    #[allow(dead_code)] // B-2에서 제거 — GC 루프가 pre_grave 훅을 잡을 때 배선된다
+    pub(crate) fn pins(&self) -> &BlobPins {
+        &self.pins
+    }
+
+    /// blob → 무덤 rename + fsync. **성공했을 때만** `Graved`를 낳는다 — `Graved`의 유일한 생성자다.
+    #[allow(dead_code)] // B-2에서 제거 — 그때 GC 삭제 분기가 이것으로 교체된다
+    pub(crate) async fn grave<'p>(&'p self, sha: &str) -> std::io::Result<Graved<'p>> {
+        atomic::rename_durable(
+            &self.layout.blob_path(sha),
+            &self.layout.grave_path(sha),
+            &self.layout.objects_dir(),
+        )
+        .await?; // ← 여기가 실패하면 Graved는 없다
+        // 무덤 이름이 **자리잡은 뒤에** 코호트를 뜬다(P6). 이 rename 이후에 pin한 put은
+        // blob_path에서 ENOENT를 보므로 **자급자족**이다 → 구조적으로 코호트 밖.
+        let cohort = self.pins.cohort_at_grave(sha);
+        self.pins.hooks.post_grave(sha).await;
+        Ok(Graved {
+            pass: self,
+            sha: sha.into(),
+            cohort,
+        })
+    }
+}
+
+impl Drop for PassGuard {
+    /// 디스크 무접촉 — 플래그와 패스-스코프 상태만 되돌린다.
+    fn drop(&mut self) {
+        self.pins.exit_pass();
+    }
+}
+
+// ── 무덤 ─────────────────────────────────────────────────────────────────────
+
+/// **무덤 rename 이후에만 존재할 수 있는 증거.** 파괴적 Drop 없음(흘리면 무덤 잔존 → 다음 패스 복구).
+/// 필드 전부 private · **`pins.rs` 밖에 생성자 없음** · `Default`/`Clone`/`Copy` 유도 금지.
+#[must_use = "Graved를 흘리면 무덤이 남는다 — settle하라"]
+pub(crate) struct Graved<'p> {
+    pass: &'p PassGuard,
+    sha: String,
+    /// 무덤 rename 시점에 살아있던 핀 id들 — **고정·유한 집합**.
+    cohort: HashSet<u64>,
+}
+
+/// `Restored`/`Deferred`는 **디스크 전이가 동일**하다(무덤 → 정본). 갈라지는 것은 **왜**뿐이다:
+/// `Restored` = 보호가 **확정**됐다(landed) · `Deferred` = 결말을 **알아내지 못했다**(타임아웃 → fail-CLOSED).
+/// 변이를 나누는 이유는 **정직성**이다 — 타임아웃 복원을 "landed commit"으로 로깅하면 거짓말이다.
+pub(crate) enum Settled {
+    Restored,
+    Reaped,
+    Deferred,
+}
+
+#[allow(dead_code)] // B-2에서 제거 — 그때 GC 삭제 분기가 이것을 쓴다
+impl Graved<'_> {
+    /// **보호 판정의 유일한 API.** 자기 자신을 **소비**한다 → 판정은 이 무덤 전이·이 sha에 바인딩된다.
+    /// **유한·fail-CLOSED**(P7): 멈춘 핀 하나가 GC를 영구 정지시킬 수 없다.
+    pub(crate) async fn settle(self) -> std::io::Result<Settled> {
+        let began = tokio::time::Instant::now();
+
+        // ① **결말을 기다린다 — 단, 유한하게.** 무덤은 그동안 안전하게 보존된다(파괴 연산은 ③에서만).
+        let outcome = self
+            .pass
+            .pins
+            .await_settlement(&self.sha, &self.cohort, self.pass.settle_timeout)
+            .await;
+
+        let grave_path = self.pass.layout.grave_path(&self.sha);
+        let blob_path = self.pass.layout.blob_path(&self.sha);
+        let objects_dir = self.pass.layout.objects_dir();
+
+        // ② **판정.** 보호 술어는 여전히 `landed` 하나뿐이다(P2).
+        let (protect, verdict) = match outcome {
+            // 보호 확정. 코호트 잔여 멤버의 결말은 판정을 바꿀 수 없다(landed는 sticky·단일 술어).
+            Settlement::Landed => (true, Settled::Restored),
+            // 결말을 **알고 나서** 판정한다.
+            Settlement::Drained => match self.pass.pins.landed(&self.sha) {
+                true => (true, Settled::Restored),
+                // 실패·취소·ENOSPC put: 오늘과 동일하게 회수한다.
+                false => (false, Settled::Reaped),
+            },
+            // **fail-CLOSED.** 결말을 알아내지 **못했다** → 보호 여부를 알 수 없다 → 보존을 택한다.
+            // 무덤을 정본으로 되돌리고 tombstone은 유지 → 다음 패스가 새 스냅샷으로 재판정한다.
+            // `gc_deleted`는 증가하지 않는다(회수하지 않았으므로).
+            Settlement::TimedOut => {
+                tracing::error!(
+                    sha = %self.sha,
+                    cohort_size = self.cohort.len(),
+                    waited_ms = began.elapsed().as_millis() as u64,
+                    "gc settle timed out — grave restored, reclamation deferred"
+                );
+                (true, Settled::Deferred)
+            }
+        };
+
+        // ③ **파괴/복원은 판정 이후에만.** 어느 분기든 `?`로 탈출해도 무덤이 남을 뿐이다
+        //    → 다음 패스의 `recover_graves`가 복원한다(fail-CLOSED by construction).
+        if protect {
+            self.pass.pins.hooks.restore_io(&self.sha)?; // fault injection
+            atomic::rename_durable(&grave_path, &blob_path, &objects_dir).await?; // 되돌리기
+            Ok(verdict) // Restored | Deferred
+        } else {
+            tokio::fs::remove_file(&grave_path).await?; // **무덤 이름만** 지운다
+            atomic::fsync_dir(&objects_dir).await?;
+            Ok(Settled::Reaped)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::AppError;
+    use crate::store::reconcile;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// 넉넉한 예산 — B-1에서는 무덤이 만들어지지 않으므로 발화하지 않는다.
+    const SETTLE: Duration = Duration::from_secs(30);
+
+    fn hex_sha(b: &[u8]) -> String {
+        hex::encode(Sha256::digest(b))
+    }
+
+    async fn store_with_objects() -> (Store, tempfile::TempDir) {
+        let d = tempfile::tempdir().unwrap();
+        let s = Store::new(d.path().to_path_buf());
+        tokio::fs::create_dir_all(d.path().join(".objects"))
+            .await
+            .unwrap();
+        (s, d)
+    }
+
+    fn landed_has(s: &Store, sha: &str) -> bool {
+        s.pins().inner.lock().unwrap().landed.contains(sha)
+    }
+
+    fn live_ids(s: &Store, sha: &str) -> HashSet<u64> {
+        s.pins()
+            .inner
+            .lock()
+            .unwrap()
+            .live
+            .get(sha)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// P1 — `pin()`도 `put()`도 **패스 보유 중에 블록하지 않는다**(상호배제 0).
+    /// 블록되면 hang 대신 타임아웃으로 실패한다(`locks.rs` 관행).
+    #[tokio::test]
+    async fn pin_and_put_do_not_block_while_pass_is_live() {
+        let (s, d) = store_with_objects().await;
+        let pass = PassGuard::begin(&s, SETTLE).await.unwrap();
+
+        let sha = "a".repeat(64);
+        let pin = tokio::time::timeout(Duration::from_secs(5), async { s.pins().pin(&sha) })
+            .await
+            .expect("pin()은 패스 보유 중에도 블록하면 안 됨");
+        assert!(live_ids(&s, &sha).contains(&pin.id));
+        drop(pin);
+
+        // put 전체(관측 → 바이트 → 커밋)도 패스를 기다리지 않는다
+        let m = tokio::time::timeout(
+            Duration::from_secs(5),
+            s.put("b", "k", "text/plain", "u", b"live-pass".to_vec()),
+        )
+        .await
+        .expect("put()은 패스 보유 중에도 블록하면 안 됨")
+        .unwrap();
+        assert!(tokio::fs::try_exists(s.blob_path(&m.sha256)).await.unwrap());
+        drop(pass);
+        drop(d);
+    }
+
+    /// 커밋 성공 → `landed ∋ sha` ∧ `live[sha]` 비어 있음(핀은 커밋 클로저 안에서 죽는다).
+    #[tokio::test]
+    async fn commit_pointer_lands_and_releases_pin() {
+        let (s, d) = store_with_objects().await;
+        let pass = PassGuard::begin(&s, SETTLE).await.unwrap();
+
+        let sha = hex_sha(b"payload");
+        let pin = s.pins().pin(&sha);
+        pin.commit_pointer(d.path().join("b").join("k.meta.json"), b"{}".to_vec())
+            .await
+            .unwrap();
+
+        assert!(landed_has(&s, &sha), "커밋 rename이 Ok → 착지 흔적");
+        assert!(live_ids(&s, &sha).is_empty(), "핀은 커밋이 끝나면 죽는다");
+        drop(pass);
+        // 패스가 끝나면 landed는 비워진다(패스 스코프)
+        assert!(!landed_has(&s, &sha));
+    }
+
+    /// **stage 실패**(타깃 부모가 **파일**) → rename에 도달조차 못 한다 → `landed` **무흔적**.
+    #[tokio::test]
+    async fn stage_failure_leaves_no_landed_trace() {
+        let (s, d) = store_with_objects().await;
+        // 부모 자리에 파일 → mkdir_p/create가 ENOTDIR로 실패
+        tokio::fs::write(d.path().join("b"), b"i am a file").await.unwrap();
+        let pass = PassGuard::begin(&s, SETTLE).await.unwrap();
+
+        let sha = hex_sha(b"never-staged");
+        let pin = s.pins().pin(&sha);
+        let r = pin
+            .commit_pointer(d.path().join("b").join("k.meta.json"), b"{}".to_vec())
+            .await;
+        assert!(r.is_err(), "stage는 실패해야 한다");
+        assert!(!landed_has(&s, &sha), "stage 실패 → 흔적 0");
+        assert!(live_ids(&s, &sha).is_empty(), "실패해도 핀은 죽는다");
+        drop(pass);
+    }
+
+    /// **흔적의 위치**: 흔적은 "커밋을 **시도**했다"가 아니라 "**착지했다**(rename이 Ok)"에만 생긴다.
+    /// 뮤턴트 킬: `Staged::commit_blocking`의 `on_landed()`를 rename **앞**으로 옮기면
+    /// 실패한 커밋도 흔적을 남겨 이 단언이 깨진다. **park 0 · spawn 0**(랑데부 없음).
+    #[tokio::test]
+    async fn landed_trace_only_when_rename_returns_ok() {
+        let (s, d) = store_with_objects().await;
+        // 커밋 타깃 자리에 **디렉터리** → stage는 성공하고 rename만 결정적으로 실패(EISDIR/ENOTEMPTY)
+        let blocked = d.path().join("b").join("k.meta.json");
+        tokio::fs::create_dir_all(&blocked).await.unwrap();
+        let pass = PassGuard::begin(&s, SETTLE).await.unwrap();
+
+        let sha = hex_sha(b"rename-fails");
+        let pin = s.pins().pin(&sha);
+        let r = pin.commit_pointer(blocked, b"{}".to_vec()).await;
+        assert!(r.is_err(), "rename은 실패해야 한다");
+        assert!(
+            !landed_has(&s, &sha),
+            "rename이 Err → 흔적 0 (on_landed는 rename Ok 이후에만 불린다)"
+        );
+
+        // 대조군: 같은 sha의 성공 커밋은 흔적을 남긴다 → 위 단언이 동어반복이 아님을 보인다
+        let pin2 = s.pins().pin(&sha);
+        pin2.commit_pointer(d.path().join("b").join("ok.meta.json"), b"{}".to_vec())
+            .await
+            .unwrap();
+        assert!(landed_has(&s, &sha), "rename이 Ok → 흔적 1");
+        drop(pass);
+    }
+
+    /// P6 — 핀 id 단조성: 같은 sha를 두 번 pin하면 **서로 다른 id** 2개가 live에 들어가고,
+    /// 하나를 drop해도 나머지는 남는다(코호트 판정의 전제).
+    #[tokio::test]
+    async fn pin_ids_are_monotonic_and_independent() {
+        let (s, _d) = store_with_objects().await;
+        let sha = "c".repeat(64);
+        let p1 = s.pins().pin(&sha);
+        let p2 = s.pins().pin(&sha);
+        assert_ne!(p1.id, p2.id, "핀 id는 단조 증가 — 충돌 불가");
+        assert_eq!(live_ids(&s, &sha).len(), 2);
+
+        let id2 = p2.id;
+        drop(p1);
+        let live = live_ids(&s, &sha);
+        assert_eq!(live.len(), 1, "하나를 drop해도 나머지 핀은 남는다");
+        assert!(live.contains(&id2));
+
+        drop(p2);
+        assert!(live_ids(&s, &sha).is_empty());
+    }
+
+    /// **D-3** — 데이터 루트 하나당 Store는 정확히 하나. `clone()`은 등록부를 공유하지만
+    /// 같은 root의 `Store::new` 2개는 **공유하지 않는다**(= 버그 부활 해저드). 테스트로 못박는다.
+    #[test]
+    fn store_clone_shares_pin_registry_but_new_does_not() {
+        let root = PathBuf::from("/data");
+        let a = Store::new(root.clone());
+        let b = a.clone();
+        assert!(
+            Arc::ptr_eq(&a.pins().inner, &b.pins().inner),
+            "Store::clone()은 핀 등록부를 공유해야 한다"
+        );
+        let c = Store::new(root);
+        assert!(
+            !Arc::ptr_eq(&a.pins().inner, &c.pins().inner),
+            "같은 root의 Store::new 2개는 등록부가 갈라진다 — reconcile이 다른 Store의 put을 못 본다(D-3)"
+        );
+    }
+
+    /// 배리어가 **프로덕션 경로**를 지난다: put 하나가 `post_observe`(관측 후) ·
+    /// `in_commit_pre_rename` · `in_commit_post_landed`(커밋 클로저 안)를 전부 발화시킨다.
+    #[tokio::test]
+    async fn hooks_fire_on_production_put_path() {
+        let observed = Arc::new(AtomicUsize::new(0));
+        let pre = Arc::new(AtomicUsize::new(0));
+        let post = Arc::new(AtomicUsize::new(0));
+        let (o, p, q) = (observed.clone(), pre.clone(), post.clone());
+
+        let hooks = Hooks {
+            post_observe: Some(Arc::new(move |_sha: &str| {
+                let o = o.clone();
+                Box::pin(async move {
+                    o.fetch_add(1, Ordering::SeqCst);
+                })
+            })),
+            in_commit_pre_rename: Some(Arc::new(move |_sha: &str| {
+                p.fetch_add(1, Ordering::SeqCst);
+            })),
+            in_commit_post_landed: Some(Arc::new(move |_sha: &str| {
+                q.fetch_add(1, Ordering::SeqCst);
+            })),
+            ..Hooks::default()
+        };
+
+        let d = tempfile::tempdir().unwrap();
+        let s = Store::with_hooks(d.path().to_path_buf(), hooks);
+        s.put("b", "k", "text/plain", "u", b"hooked".to_vec())
+            .await
+            .unwrap();
+
+        assert_eq!(observed.load(Ordering::SeqCst), 1, "blob_intact 후 post_observe");
+        assert_eq!(pre.load(Ordering::SeqCst), 1, "커밋 클로저 안 in_commit_pre_rename");
+        assert_eq!(post.load(Ordering::SeqCst), 1, "on_landed 안 in_commit_post_landed");
+    }
+
+    /// **T-C1 — 두 번째 플립 회귀 가드**(ENOSPC 무한연기의 기계 증인).
+    /// 커밋 rename이 결정적으로 실패한 put(`Err(Internal)`)은 blob을 **보호하지 않는다** →
+    /// 만료·미참조 blob은 오늘과 동일하게 회수된다(`gc_deleted == 1`).
+    ///
+    /// ⚠ 한계(정직하게): put은 reconcile **시작 전에** 완주(Err)하고 그 핀은 **이미 죽어 있다**
+    /// → **park 0 · spawn 0**이며, **겹치는(overlapping) 실패 put**은 전혀 재현하지 못한다.
+    /// 그 창의 증인은 T-C3(B-2)다. 이 테스트는 `landed` 흔적의 **위치**만 지킨다.
+    #[tokio::test]
+    async fn failed_commit_does_not_protect_blob_from_gc() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().to_path_buf();
+        let s = Store::new(root.clone());
+
+        // 1) blob을 만들고 참조를 지운다 → 미참조 blob이 디스크에 남는다
+        let content = b"tc1-payload".to_vec();
+        let sha = hex_sha(&content);
+        s.put("b", "v", "text/plain", "u", content.clone())
+            .await
+            .unwrap();
+        s.delete("b", "v").await.unwrap();
+
+        // 2) 만료 tombstone → 다음 패스에서 즉시 삭제 조건 성립
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let mut pending = serde_json::Map::new();
+        pending.insert(sha.clone(), serde_json::json!(now - 3600));
+        tokio::fs::write(
+            root.join(".objects").join(".gc-pending.json"),
+            serde_json::to_vec(&pending).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        // 3) 커밋 rename을 결정적으로 실패시킨다: 포인터 자리에 디렉터리
+        tokio::fs::create_dir_all(root.join("b").join("k.meta.json"))
+            .await
+            .unwrap();
+        let r = s.put("b", "k", "text/plain", "u", content).await;
+        assert!(
+            matches!(r, Err(AppError::Internal(_))),
+            "커밋 rename 실패 → Internal"
+        );
+        assert!(!landed_has(&s, &sha), "착지하지 못한 put은 흔적을 남기지 않는다");
+
+        // 4) 실패한 put은 blob을 보호하지 않는다 → 회수된다
+        let stats = reconcile::run_once(&s, Duration::ZERO, SETTLE).await.unwrap();
+        assert_eq!(stats.gc_deleted, 1, "실패한 커밋은 blob을 보호하지 않는다");
+        assert!(!tokio::fs::try_exists(s.blob_path(&sha)).await.unwrap());
+    }
+}

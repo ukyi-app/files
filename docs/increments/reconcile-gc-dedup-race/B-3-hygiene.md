@@ -315,6 +315,9 @@ mv <DATA_DIR>/.objects/.gc-grave-<sha> <DATA_DIR>/.objects/<sha>
 - [ ] **⚠ 격리 분기 diff 0줄**(D-4) — **`git diff`로 증명.** `corrupt_blob_quarantined` **불변 초록**
 - [ ] tracing: `GC restored` / `grave recovered` 필드(`sha`) · **Drop poison 봉인**
       (`unwrap_or_else(into_inner)`) · `shrink_to_fit`
+- [ ] **`git grep -n 'allow(dead_code)' -- src/store/pins.rs` → 0건.** B-2가 남긴 **마지막 1건**
+      (`PassGuard::recovered`)을 **여기서 제거한다** — `recovered()`는 위 `"grave recovered"` 관측성이
+      **소비하는 순간** 살아난다. **그 attribute가 사라지는 것이 곧 관측성 배선의 증거다.**
 - [ ] **ADR 0002** + **CONTEXT.md Language**: **Pin / Landed / Grave / Cohort / Settle** (특히 *"landed = 커밋
       rename이 `Ok`를 반환했다"* — **유일한 보호 술어** — 와 *"cohort = 무덤 rename 시점에 살아있던 핀 집합"* —
       **대기 조건이지 보호가 아니다** — 와 *"settle = **유한·fail-CLOSED** 정산: landed 확정 → 즉시 복원 /

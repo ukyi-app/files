@@ -68,7 +68,9 @@ async fn on_disk_layout_golden_tree() {
     s.delete("b", "k").await.unwrap();
 
     // 삭제된 k의 블롭은 미참조 → 첫 관측으로 tombstone 유예 등재(삭제 아님)
-    let stats = reconcile::run_once(&root, Duration::from_secs(3600)).await.unwrap();
+    let stats = reconcile::run_once(&s, Duration::from_secs(3600), Duration::from_secs(30))
+        .await
+        .unwrap();
     assert_eq!(
         stats,
         reconcile::ReconcileStats {
@@ -134,7 +136,9 @@ async fn symlinked_commit_pointer_current_behavior() {
 
     // collect_referenced도 심링크를 추종: referenced에 sha_only가 포함돼야(=2) 하며,
     // 심링크 무시 회귀 시 sha_only 미참조 → gc_pending:1로 이 단언이 깨진다
-    let stats = reconcile::run_once(&root, Duration::from_secs(3600)).await.unwrap();
+    let stats = reconcile::run_once(&s, Duration::from_secs(3600), Duration::from_secs(30))
+        .await
+        .unwrap();
     assert_eq!(
         stats,
         reconcile::ReconcileStats {
@@ -195,7 +199,9 @@ async fn put_stream_midflight_temp_observed_and_preserved() {
     assert!(tmps[0].starts_with(".tmp-"));
 
     // grace 내 reconcile은 활성 temp를 보존한다
-    let stats = reconcile::run_once(&root, Duration::from_secs(3600)).await.unwrap();
+    let stats = reconcile::run_once(&s, Duration::from_secs(3600), Duration::from_secs(30))
+        .await
+        .unwrap();
     assert_eq!(
         stats,
         reconcile::ReconcileStats {

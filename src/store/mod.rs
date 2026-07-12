@@ -5,6 +5,7 @@ pub mod reconcile;
 mod buckets;
 mod listing;
 mod objects;
+mod pins;
 #[cfg(test)]
 mod tests;
 
@@ -19,18 +20,43 @@ use std::path::PathBuf;
 pub struct Store {
     layout: Layout,
     locks: locks::KeyLocks,
+    /// blob 핀 등록부(in-process). `clone()`은 내부 `Arc`를 공유한다.
+    pins: pins::BlobPins,
 }
 
 impl Store {
+    /// ⚠ **데이터 루트 하나당 `Store`는 정확히 하나다**(D-3).
+    /// 핀 등록부는 in-process이고 `clone()`이 `Arc`를 공유한다. 같은 root로 `Store::new`를
+    /// 두 번 부르면 등록부가 갈라져 reconcile이 다른 `Store`의 put을 보지 못한다
+    /// → `reconcile-gc-dedup-race` 부활. 공유가 필요하면 **`Store::clone()`**을 써라.
     pub fn new(root: PathBuf) -> Self {
         Self {
             layout: Layout::new(root),
             locks: locks::KeyLocks::new(),
+            pins: pins::BlobPins::new(),
+        }
+    }
+
+    /// 결정적 배리어를 주입한 `Store`(테스트 전용). 훅은 프로덕션과 **같은 경로**를 지난다.
+    #[cfg(test)]
+    pub(crate) fn with_hooks(root: PathBuf, hooks: pins::Hooks) -> Self {
+        Self {
+            layout: Layout::new(root),
+            locks: locks::KeyLocks::new(),
+            pins: pins::BlobPins::with_hooks(hooks),
         }
     }
 
     pub fn blob_path(&self, sha: &str) -> PathBuf {
         self.layout.blob_path(sha)
+    }
+
+    pub(crate) fn layout(&self) -> &Layout {
+        &self.layout
+    }
+
+    pub(crate) fn pins(&self) -> &pins::BlobPins {
+        &self.pins
     }
 
     fn meta_for(&self, bucket: &str, key: &str) -> Result<PathBuf, AppError> {
