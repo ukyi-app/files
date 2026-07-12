@@ -1,0 +1,21 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "plan",
+  "verdict": "approve",
+  "summary": "Ship the Round 8 plan. P-8 now proves the grave and restoration; P-9 observes all three parked put tasks through teardown after the stall assertions. The committed RED record matches red.sha and pins the stated data-loss symptom; no tests were re-run. No new critical issue found. Simpler alternative: none. Open question: none.",
+  "planFile": "docs/bugfixes/reconcile-gc-dedup-race.md",
+  "planInDiff": true,
+  "reviewedFileCount": 1,
+  "target": "working tree diff",
+  "reviewedSha": "a22771b07d48c80d66f8d78b5b6d1d8bb2001be6",
+  "reviewedTree": "fe625db0097c27b8c685213db5cc102bae42b36c",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 0,
+  "planFindingCount": 0,
+  "findings": [],
+  "next_steps": [
+    "Proceed to implementation; leave GREEN verification to the machine-owned gated workflow."
+  ]
+}
