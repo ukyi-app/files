@@ -54,13 +54,13 @@ pub fn valid_key(k: &str) -> Result<(), AppError> {
 
 /// 메타 파일 경로 계산용(바이트는 content-addressed `.objects/`에 저장 — M3).
 /// segment_ok가 traversal을 차단하므로 존재하지 않는 경로라도 안전(canonicalize 불요).
-pub(crate) fn safe_object_path(root: &Path, bucket: &str, key: &str) -> Result<PathBuf, AppError> {
+fn safe_object_path(root: &Path, bucket: &str, key: &str) -> Result<PathBuf, AppError> {
     valid_bucket(bucket)?;
     valid_key(key)?;
     Ok(root.join(bucket).join(key))
 }
 
-pub(crate) fn meta_path(object: &Path) -> PathBuf {
+fn meta_path(object: &Path) -> PathBuf {
     let mut s = object.as_os_str().to_owned();
     s.push(META_SUFFIX);
     PathBuf::from(s)
