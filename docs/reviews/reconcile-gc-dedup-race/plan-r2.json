@@ -1,0 +1,46 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "plan",
+  "verdict": "needs-attention",
+  "summary": "Do not ship the plan yet. P-1 and the committed RED witness are sound, but P-2 and P-3 remain unresolved blockers. No new critical issue or materially simpler safe fix was found; naive rechecks and coarse locks retain TOCTOU or change blocking behavior.",
+  "planFile": "docs/bugfixes/reconcile-gc-dedup-race.md",
+  "planInDiff": true,
+  "reviewedFileCount": 1,
+  "target": "working tree diff",
+  "reviewedSha": "9f435b537322a4fcfe2b6575041dded29aa3833d",
+  "reviewedTree": "11fbd50145470a7f18fa8a1f4c26316f6959ee0c",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 2,
+  "planFindingCount": 2,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "P-2 remains: an overlapping failed put still changes GC behavior",
+      "body": "The contract restores X whenever a pin is live at grave time, before that put's outcome is known, yet immediately claims every failed, cancelled, ENOSPC, or rename-failed put is reaped identically to today. A put can observe X, remain live while GC settles and restores it (`gc_deleted == 0`), then fail its pointer rename with no pointer created. Repeated failures overlapping each pass can therefore defer reclamation indefinitely. T-C1 misses this because it runs reconciliation only after the failing put has returned and its live pin has dropped. This is the same uncharacterized capacity/statistics flip P-2 identified.",
+      "file": "docs/bugfixes/reconcile-gc-dedup-race.md",
+      "line_start": 453,
+      "line_end": 458,
+      "confidence": 0.99,
+      "recommendation": "Do not treat `live` as a successful outcome. Track terminal outcomes for pins present at grave time and restore only after a landed commit, or route the reclamation change to another pipeline. Add a deterministic test that parks a live put through `settle`, then forces its rename to fail and requires `gc_deleted == 1`.",
+      "isPlanFinding": true
+    },
+    {
+      "severity": "high",
+      "title": "P-3 remains: RenameReceipt does not enforce the claimed ordering",
+      "body": "The plan claims a pre-grave `protected()` check cannot compile, but `RenameReceipt` is an unbound unit token and the generic `pub(crate)` `rename_durable` can produce one for arbitrary paths. Code in `pins.rs` can therefore obtain a receipt from an unrelated rename and perform the unsafe check before the blob-to-grave transition without changing `atomic.rs`. T-B2 would remain green because its put is already live before `pre_grave` and fully landed before GC resumes, so any such precheck sees either `live` or `landed`. The load-bearing check-to-rename mutant is still unpinned.",
+      "file": "docs/bugfixes/reconcile-gc-dedup-race.md",
+      "line_start": 695,
+      "line_end": 704,
+      "confidence": 0.97,
+      "recommendation": "Bind and consume the proof for the exact SHA and blob-to-grave transition, or evaluate protection through a callback that is reachable only after that rename. Revise T-B2 so the put begins or lands after a modeled precheck but before the grave rename, and require the unsafe mutant to fail.",
+      "isPlanFinding": true
+    }
+  ],
+  "next_steps": [
+    "Revise the outcome protocol and add the overlapping eventual-failure witness for P-2.",
+    "Make the grave proof transition-specific and add a deterministic precheck-to-rename mutant witness for P-3.",
+    "Repeat the plan review without re-running machine-owned GREEN verification."
+  ]
+}
