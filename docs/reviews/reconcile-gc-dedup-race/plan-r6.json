@@ -1,0 +1,33 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "plan",
+  "verdict": "needs-attention",
+  "summary": "Do not ship: P-6 itself is resolved and the committed RED witness remains sound, but T-C2 still assumes `abort()` completes cancellation synchronously. Simpler alternative: await the aborted task before starting GC; no production hook or fix-model change. Open question: none.",
+  "planFile": "docs/bugfixes/reconcile-gc-dedup-race.md",
+  "planInDiff": true,
+  "reviewedFileCount": 1,
+  "target": "working tree diff",
+  "reviewedSha": "59aad86f4d6abf5a5a95e2c6ebfab99efc412df7",
+  "reviewedTree": "bb52e6033f14c828a68c471118f04339e7fcfc67",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 1,
+  "planFindingCount": 1,
+  "findings": [
+    {
+      "severity": "critical",
+      "title": "T-C2 never proves caller cancellation completed",
+      "body": "`pre_rename_reached` proves the blocking closure started, but the plan then calls `abort()` and immediately spawns GC. Tokio 1.52.3 specifies that `JoinHandle::abort()` only schedules cancellation and may return before task locals are dropped. Under the exact caller-owned-`PinGuard` mutant T-C2 claims to kill, GC can therefore capture that still-live guard, park settlement, and then restore after the released closure lands the pointer—leaving the test GREEN despite the unsafe ownership model. `graved_reached` and the pending probe prove GC's state, not cancellation completion, so the original cancellation-driven data-loss path could ship.",
+      "file": "docs/bugfixes/reconcile-gc-dedup-race.md",
+      "line_start": 1406,
+      "line_end": 1415,
+      "confidence": 0.99,
+      "recommendation": "After `abort()`, await the outer put `JoinHandle` under a bounded timeout and assert `JoinError::is_cancelled()` before spawning GC. Keep `park_A` blocked: correct code's started `spawn_blocking` closure remains detached with the pin, while the caller-owned mutant drops it. Record this cancellation-completed await in the rendezvous checklist.",
+      "isPlanFinding": true
+    }
+  ],
+  "next_steps": [
+    "Revise only T-C2's choreography as recommended, then repeat the scoped review without changing the production hook set or fix model."
+  ]
+}
