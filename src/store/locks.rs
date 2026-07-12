@@ -14,12 +14,30 @@ fn lock_key(bucket: &str, key: &str) -> String {
     format!("{bucket}/{key}")
 }
 
+/// 직렬화 가드. **`KeyLocks::lock`만이 만든다**(필드 private · 같은 모듈 외 생성자 0)
+/// → "아무 `OwnedMutexGuard<()>`나 커밋에 넘기기"가 **표현 불가**하다.
+///
+/// `'static`(owned)인 이유는 하나다: **커밋 클로저로 이전(move)되기 위해서**다.
+/// 가드가 호출자 퓨처에 남으면 `upload_timeout`·disconnect가 그것을 드롭하는데,
+/// **무취소 커밋 클로저는 아직 stage/rename 중**일 수 있다 → 같은 키의 재시도·delete가
+/// 락을 얻어 먼저 끝나고, 뒤늦게 깨어난 낡은 rename이 **더 새로운 포인터를 덮어쓰거나
+/// 삭제된 키를 되살린다**(B8 위반). 그래서 락의 수명은 **커밋과 같아야 한다**.
+pub struct KeyGuard(OwnedMutexGuard<()>);
+
+impl KeyGuard {
+    /// 해제의 **명시적** 지점. 커밋 클로저는 rename·fsync·핀drop이 **전부 끝난 뒤** 이것을 부른다
+    /// → 드롭 순서가 암묵적 스코프 규칙이 아니라 **코드에** 박힌다.
+    pub(crate) fn release(self) {
+        drop(self.0);
+    }
+}
+
 impl KeyLocks {
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub async fn lock(&self, bucket: &str, key: &str) -> OwnedMutexGuard<()> {
+    pub async fn lock(&self, bucket: &str, key: &str) -> KeyGuard {
         let m = {
             self.map
                 .lock()
@@ -28,7 +46,7 @@ impl KeyLocks {
                 .or_insert_with(|| Arc::new(AsyncMutex::new(())))
                 .clone()
         };
-        m.lock_owned().await
+        KeyGuard(m.lock_owned().await)
     }
 
     #[cfg(test)]

@@ -1,0 +1,34 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "structure",
+  "verdict": "needs-attention",
+  "summary": "Do not ship B-1: caller cancellation lets the new uncancellable commit escape same-key serialization, so an expired upload can overwrite or resurrect state after a later successful operation.",
+  "planFile": "docs/bugfixes/reconcile-gc-dedup-race.md",
+  "planInDiff": null,
+  "reviewedFileCount": 14,
+  "target": "branch diff against main",
+  "reviewedSha": "15f23c6a5a3af6f440beeca90d86c3846e7bb51b",
+  "reviewedTree": "29d4a651f432c933ff1d2276785b3ef84bb1c6ce",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 1,
+  "planFindingCount": 0,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "Uncancellable pointer commits outlive the per-key lock",
+      "body": "`put_stream` keeps `_g` in the caller future but transfers only `PinGuard` into `commit_pointer`. The HTTP upload timeout drops that caller future and releases `_g`, while the deliberately non-abortable blocking closure may still be staging or waiting to rename. A retry or delete for the same bucket/key can then acquire the lock and finish first; when the older closure resumes, it can overwrite the newer pointer or recreate a successfully deleted key. The planned B-2 tests exercise GC settlement, not this same-key ordering failure, so continuing would cement an unsafe commit API.",
+      "file": "src/store/objects.rs",
+      "line_start": 64,
+      "line_end": 105,
+      "confidence": 0.98,
+      "recommendation": "Keep the load-bearing uncancellable `PinGuard` ownership, but make the commit closure also own the per-key `OwnedMutexGuard`—preferably through an opaque commit token—until rename and fsync finish. Add a deterministic pre-rename cancellation test proving a same-key retry/delete remains blocked and ultimately wins.",
+      "isPlanFinding": false
+    }
+  ],
+  "next_steps": [
+    "Revise the commit seam so all ordering guards outlive the uncancellable operation.",
+    "Add the cancellation-order regression, refresh B-1 verification evidence, and repeat the structure review."
+  ]
+}

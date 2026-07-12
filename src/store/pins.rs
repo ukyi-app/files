@@ -10,6 +10,11 @@
 //!    모두 끝난 뒤 그 클로저 안에서 실행된다 → "핀이 죽었는데 rename이 나중에 착지"는 **불가능**.
 //!    (tokio: 시작된 `spawn_blocking` 태스크는 abort 불가 — 퓨처를 드롭해도 클로저는 끝까지 실행된다.)
 //!    ⇒ **핀의 죽음 = 그 put의 종료 결과(terminal outcome) 확정**이며, 결과는 landed에 이미 반영돼 있다.
+//! P3′ **키 락도 같은 클로저가 소유한다**(B8: 같은 bucket/key 쓰기 직렬화). 무취소 커밋과 취소 가능한
+//!    가드는 **공존할 수 없다** — 가드가 호출자 퓨처에 남으면 `upload_timeout`이 그것을 풀어버리고,
+//!    같은 키의 재시도·delete가 **먼저 끝난 뒤** 낡은 rename이 깨어나 그 결과를 덮어쓴다(포인터 회귀·
+//!    삭제된 키의 부활). ⇒ **두 가드는 같은 `spawn_blocking` 클로저 안에서, 핀 → 키 락 순으로 죽는다**
+//!    → 키 락이 풀리는 순간 이 put은 이미 terminal이다. (증인: T-S1)
 //! P4 보호 판정 API는 **`Graved::settle(self)` 하나뿐**이다. `Graved`는 **`PassGuard::grave()`의
 //!    blob→무덤 rename이 성공했을 때만** 태어나고(private 필드·같은 모듈 외 생성자 0·derive 0),
 //!    자기 `sha`와 **무덤 시점 코호트**를 품는다 → 판정이 **그 전이·그 sha에** 바인딩된다.
@@ -35,12 +40,13 @@
 //! `PassGuard::recovered`의 하나는 B-3(관측성 배선)이 제거한다. **그 제거가 곧 배선의 증거다.**
 
 use super::atomic;
+use super::locks::KeyGuard;
 use super::Store;
 use crate::layout::Layout;
 use futures::future::BoxFuture;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::OwnedMutexGuard;
@@ -254,33 +260,51 @@ impl PinGuard {
         ok
     }
 
-    /// **커밋 = 이 핀을 소비하는 무취소 연산.**
-    /// 단일 blocking 클로저가 가드를 **소유**한다 → 호출자 취소(upload_timeout·disconnect)가
-    /// in-flight rename에서 핀을 떼어낼 수 없다.
-    pub(crate) async fn commit_pointer(self, target: PathBuf, bytes: Vec<u8>) -> std::io::Result<()> {
+    /// **커밋 = 핀과 키 락을 함께 소비하는 무취소 연산.**
+    /// 단일 blocking 클로저가 **두 가드를 모두 소유**한다 → 호출자 취소(upload_timeout·disconnect)가
+    /// in-flight rename에서 **핀을 떼어낼 수도**(P3) **같은 키의 직렬화를 풀 수도**(B8) 없다.
+    /// 키 락이 호출자 퓨처에 남아 있으면: 취소가 락을 풀고 → 같은 키의 재시도·delete가 락을 얻어
+    /// **먼저 끝나고** → 뒤늦게 깨어난 낡은 rename이 **더 새 포인터를 덮어쓰거나 삭제된 키를
+    /// 되살린다**. 그래서 락은 **커밋으로 이전된다**(증인: T-S1).
+    pub(crate) async fn commit_pointer(
+        self,
+        key: KeyGuard,
+        target: PathBuf,
+        bytes: Vec<u8>,
+    ) -> std::io::Result<()> {
         tokio::task::spawn_blocking(move || {
-            let me = self; // 가드를 클로저가 소유
-            let staged = atomic::stage_blocking(&target, &bytes)?; // ← 여기까지의 실패 = **흔적 0**
-            me.pins.hooks.in_commit_pre_rename(&me.sha); // 동기 훅
-            staged.commit_blocking(|| {
-                // ← rename Ok 직후에만
-                let landed_now = {
-                    let mut g = me.pins.inner.lock().unwrap();
-                    // **착지 흔적**. insert의 반환값 = 이번에 처음 들어갔는가(전이에서만 깨운다)
-                    g.pass_live && g.landed.insert(me.sha.clone())
-                }; // ← 락을 **먼저 놓고** 깨운다(PinGuard::drop과 같은 규율)
-                   // 보호가 **확정**됐다 → 코호트 대기 중인 settle()을 **즉시** 깨운다.
-                   // notify_waiters()는 동기·논블로킹이고 런타임 컨텍스트를 요구하지 않는다.
-                if landed_now {
-                    me.pins.settled.notify_waiters();
-                }
-                // ⚠ notify_waiters()가 이 훅보다 **먼저** 호출된다 — 순서를 뒤집지 마라(B-2 T-P4b-2).
-                me.pins.hooks.in_commit_post_landed(&me.sha); // rename **이후**
-            })
-            // me(PinGuard) drop: rename·마킹·fsync가 **전부 끝난 뒤** live[sha]에서 id 제거 + notify
+            let r = self.commit_blocking(&target, &bytes);
+            // ⚠ **드롭 순서 고정**(획득 역순 = LIFO): ① 핀 ② 키 락. 암묵적 스코프 규칙에 맡기지 않는다.
+            // 핀이 **먼저** 죽어야 키 락이 풀리는 순간 이 put은 **이미 terminal**이다(P3: 핀의 죽음
+            // = 종료 결과 확정) → 같은 키의 다음 writer는 **결말이 확정된 세계**에서 시작한다.
+            // 반대로 두면 다음 writer가 이전 put의 **살아있는 핀**과 겹친다(GC 코호트가 커진다).
+            drop(self); // ① 핀: live[sha]에서 id 제거 + settle 깨움
+            key.release(); // ② 키 락: 그제서야 같은 bucket/key의 다음 writer가 깨어난다
+            r
         })
         .await
         .expect("join")
+    }
+
+    /// 커밋의 **동기 본체**. 두 가드는 이것이 반환한 **뒤에** 드롭된다 — `?`가 가드를 조기 해제할 수 없다.
+    fn commit_blocking(&self, target: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        let staged = atomic::stage_blocking(target, bytes)?; // ← 여기까지의 실패 = **흔적 0**
+        self.pins.hooks.in_commit_pre_rename(&self.sha); // 동기 훅
+        staged.commit_blocking(|| {
+            // ← rename Ok 직후에만
+            let landed_now = {
+                let mut g = self.pins.inner.lock().unwrap();
+                // **착지 흔적**. insert의 반환값 = 이번에 처음 들어갔는가(전이에서만 깨운다)
+                g.pass_live && g.landed.insert(self.sha.clone())
+            }; // ← 락을 **먼저 놓고** 깨운다(PinGuard::drop과 같은 규율)
+               // 보호가 **확정**됐다 → 코호트 대기 중인 settle()을 **즉시** 깨운다.
+               // notify_waiters()는 동기·논블로킹이고 런타임 컨텍스트를 요구하지 않는다.
+            if landed_now {
+                self.pins.settled.notify_waiters();
+            }
+            // ⚠ notify_waiters()가 이 훅보다 **먼저** 호출된다 — 순서를 뒤집지 마라(B-2 T-P4b-2).
+            self.pins.hooks.in_commit_post_landed(&self.sha); // rename **이후**
+        })
     }
 }
 
@@ -526,7 +550,8 @@ mod tests {
 
         let sha = hex_sha(b"payload");
         let pin = s.pins().pin(&sha);
-        pin.commit_pointer(d.path().join("b").join("k.meta.json"), b"{}".to_vec())
+        let key = s.locks.lock("b", "k").await; // 커밋으로 **이전**된다(P3′)
+        pin.commit_pointer(key, d.path().join("b").join("k.meta.json"), b"{}".to_vec())
             .await
             .unwrap();
 
@@ -547,8 +572,9 @@ mod tests {
 
         let sha = hex_sha(b"never-staged");
         let pin = s.pins().pin(&sha);
+        let key = s.locks.lock("b", "k").await;
         let r = pin
-            .commit_pointer(d.path().join("b").join("k.meta.json"), b"{}".to_vec())
+            .commit_pointer(key, d.path().join("b").join("k.meta.json"), b"{}".to_vec())
             .await;
         assert!(r.is_err(), "stage는 실패해야 한다");
         assert!(!landed_has(&s, &sha), "stage 실패 → 흔적 0");
@@ -569,7 +595,8 @@ mod tests {
 
         let sha = hex_sha(b"rename-fails");
         let pin = s.pins().pin(&sha);
-        let r = pin.commit_pointer(blocked, b"{}".to_vec()).await;
+        let key = s.locks.lock("b", "k").await;
+        let r = pin.commit_pointer(key, blocked, b"{}".to_vec()).await;
         assert!(r.is_err(), "rename은 실패해야 한다");
         assert!(
             !landed_has(&s, &sha),
@@ -577,8 +604,10 @@ mod tests {
         );
 
         // 대조군: 같은 sha의 성공 커밋은 흔적을 남긴다 → 위 단언이 동어반복이 아님을 보인다
+        // (앞 커밋이 실패해도 키 락은 그 클로저 안에서 풀렸다 → 이 lock()은 블록되지 않는다)
         let pin2 = s.pins().pin(&sha);
-        pin2.commit_pointer(d.path().join("b").join("ok.meta.json"), b"{}".to_vec())
+        let key2 = s.locks.lock("b", "ok").await;
+        pin2.commit_pointer(key2, d.path().join("b").join("ok.meta.json"), b"{}".to_vec())
             .await
             .unwrap();
         assert!(landed_has(&s, &sha), "rename이 Ok → 흔적 1");
@@ -658,6 +687,107 @@ mod tests {
         assert_eq!(observed.load(Ordering::SeqCst), 1, "blob_intact 후 post_observe");
         assert_eq!(pre.load(Ordering::SeqCst), 1, "커밋 클로저 안 in_commit_pre_rename");
         assert_eq!(post.load(Ordering::SeqCst), 1, "on_landed 안 in_commit_post_landed");
+    }
+
+    /// **T-S1 — 무취소 커밋은 키 락을 **함께** 들고 죽는다**(B8: 같은 bucket/key 직렬화).
+    ///
+    /// 안무(랑데부):
+    ///  ① A(put)를 spawn → 커밋 클로저의 `in_commit_pre_rename`에서 **park**
+    ///     (이 순간 핀 **과** 키 락은 **클로저**의 소유다) → **도착 신호**를 await.
+    ///  ② A의 **바깥 퓨처를 abort** → `JoinError::is_cancelled()`를 **await로 확인**
+    ///     (abort ≠ 취소 완료). blocking 클로저는 여전히 park 중이다 — tokio는 그것을 죽이지 못한다.
+    ///  ③ 같은 bucket/key로 **delete B**를 spawn → `timeout(200ms)`가 **pending**임을 관측
+    ///     (= B가 커밋이 쥔 키 락에 막혔다).
+    ///  ④ park 해제 → A의 클로저가 rename·fsync·핀drop·키락drop을 **완주**.
+    ///  ⑤ **그제서야** B가 진행되어 **이긴다**: 순서 = [A:landed, B:deleted] ∧ 포인터 **부재**.
+    ///
+    /// 뮤턴트(키 가드를 **호출자 퓨처에** 남김 = S-1 이전 코드):
+    ///  ② 취소가 락을 **풀어버린다** → ③의 timeout이 **완료**(B가 먼저 끝난다) → 첫 단언 RED.
+    ///  그리고 뒤늦게 깨어난 A의 rename이 **삭제된 키를 되살린다** → 순서·부재 단언도 RED.
+    #[tokio::test]
+    async fn commit_holds_key_lock_until_rename_lands() {
+        // 도착 신호(비동기 수신) · park 해제(동기 대기 — 커밋 클로저는 blocking 스레드에 있다)
+        let (arrived_tx, mut arrived_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let release_rx = Mutex::new(release_rx);
+        let seq: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+        let seq_hook = seq.clone();
+
+        let hooks = Hooks {
+            // 커밋 클로저 **안**, rename **직전**. 두 가드 모두 클로저가 들고 있다.
+            in_commit_pre_rename: Some(Arc::new(move |_sha: &str| {
+                arrived_tx.send(()).expect("도착 신호");
+                release_rx.lock().unwrap().recv().expect("park 해제 신호");
+            })),
+            // rename이 Ok를 반환한 **직후** → A가 실제로 착지했음의 증거(공허한 통과 방지).
+            in_commit_post_landed: Some(Arc::new(move |_sha: &str| {
+                seq_hook.lock().unwrap().push("A:landed");
+            })),
+            ..Hooks::default()
+        };
+
+        let d = tempfile::tempdir().unwrap();
+        let s = Store::with_hooks(d.path().to_path_buf(), hooks);
+        let meta = s.meta_for("b", "k").unwrap();
+
+        // ① A: put — 커밋 직전에서 park한다.
+        let a = tokio::spawn({
+            let s = s.clone();
+            async move { s.put("b", "k", "text/plain", "u", b"A".to_vec()).await }
+        });
+        tokio::time::timeout(Duration::from_secs(5), arrived_rx.recv())
+            .await
+            .expect("A는 커밋 클로저(rename 직전)에 도달해야 한다")
+            .expect("도착 신호 채널");
+
+        // ② abort → **취소 완료까지 await**한다.
+        a.abort();
+        let joined = tokio::time::timeout(Duration::from_secs(5), a)
+            .await
+            .expect("취소는 완료되어야 한다(블로킹 클로저를 기다리지 않는다)");
+        assert!(
+            joined.expect_err("A의 퓨처는 취소된다").is_cancelled(),
+            "abort → JoinError::is_cancelled (퓨처는 죽었다)"
+        );
+        // ※ 그러나 blocking 클로저는 **살아 있다** — 지금도 park 중이며 두 가드를 쥐고 있다.
+
+        // ③ B: 같은 bucket/key delete. 커밋이 키 락을 쥐고 있으므로 **블록돼야 한다**.
+        let mut b = tokio::spawn({
+            let (s, seq) = (s.clone(), seq.clone());
+            async move {
+                let r = s.delete("b", "k").await;
+                seq.lock().unwrap().push("B:deleted");
+                r
+            }
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), &mut b)
+                .await
+                .is_err(),
+            "B는 무취소 커밋이 키 락을 놓을 때까지 블록돼야 한다 \
+             — 가드가 호출자 퓨처에 남으면 여기서 B가 먼저 끝난다(RED)"
+        );
+
+        // ④ park 해제 → A의 클로저가 rename·fsync·핀drop·키락drop을 완주한다.
+        release_tx.send(()).expect("park 해제");
+
+        // ⑤ 그제서야 B가 진행되어 이긴다. 핸들은 **보유했다가** await하고 두 겹을 모두 unwrap한다.
+        tokio::time::timeout(Duration::from_secs(5), b)
+            .await
+            .expect("B는 커밋이 끝나면 진행된다")
+            .expect("B 태스크는 패닉/취소되지 않는다")
+            .expect("delete는 성공한다");
+
+        assert_eq!(
+            *seq.lock().unwrap(),
+            vec!["A:landed", "B:deleted"],
+            "무취소 커밋이 먼저 **완주**하고(rename Ok), 그 다음에야 같은 키의 B가 실행된다"
+        );
+        assert!(
+            !tokio::fs::try_exists(&meta).await.unwrap(),
+            "B(delete)가 **이긴다** — 낡은 커밋이 삭제된 키를 되살리면 안 된다"
+        );
+        drop(d);
     }
 
     /// **T-C1 — 두 번째 플립 회귀 가드**(ENOSPC 무한연기의 기계 증인).
