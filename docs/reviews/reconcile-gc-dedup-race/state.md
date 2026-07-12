@@ -3,14 +3,14 @@ bugfix: reconcile-gc-dedup-race
 invariant-class: bugfix       # Rule 0: 관측 행동이 정확히 하나 뒤집힌다(살아있는 블롭이 GC됨 → 안 됨)
 entry-track: bug
 review-track: full            # 데이터 손실 + 동시성 + 스토리지 표면 → full(세 게이트 전부)
-pipeline-stage: diagnose
+pipeline-stage: red-capture
 issue-tracker: local
 worktree:
 branch:
 consent-scope:
 symptom: "reconcile가 참조 스냅샷을 뜬 뒤 동시 put이 dedup 경로로 그 블롭을 커밋하면, GC가 살아있는 블롭을 삭제한다 — 커밋 포인터는 남고 블롭만 사라져 객체가 영구 non-servable이 된다(GET 404 / list 제외). 데이터 손실."
-red-baseline:
-bugfix-lock: pending
+red-baseline: 65458082b6692acd0345763da96ef9a811ae745e
+bugfix-lock: red
 spike-1:
 ---
 
