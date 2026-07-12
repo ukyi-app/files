@@ -5,9 +5,9 @@ entry-track: bug
 review-track: full            # 데이터 손실 + 동시성 + 스토리지 표면 → full(세 게이트 전부)
 pipeline-stage: red-capture
 issue-tracker: local
-worktree:
-branch:
-consent-scope:
+worktree: /Users/ukyi/workspace/files/.claude/worktrees/bugfix-reconcile-gc-dedup-race
+branch: bugfix-reconcile-gc-dedup-race
+consent-scope: "증분 B-1~B-3 자율 루프 + 컨덕터 커밋 권한. 사용자 지시(2026-07-13): 특이사항 없으면 멈추지 말고 권장안대로 진행 — 게이트 findings가 국소 사안(테스트 안무 등)에 머무는 동안 승인을 묻지 않고 진행하고, 설계 모델 변경이나 실질 트레이드오프가 생기면 에스컬레이션."
 symptom: "reconcile가 참조 스냅샷을 뜬 뒤 동시 put이 dedup 경로로 그 블롭을 커밋하면, GC가 살아있는 블롭을 삭제한다 — 커밋 포인터는 남고 블롭만 사라져 객체가 영구 non-servable이 된다(GET 404 / list 제외). 데이터 손실."
 red-baseline: 65458082b6692acd0345763da96ef9a811ae745e
 bugfix-lock: red
