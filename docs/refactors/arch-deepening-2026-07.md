@@ -231,6 +231,7 @@ seam.
 | F-21 | 공개 표면 예약 경로의 **응답 비대칭**(R-6 실측): `PUT /healthz/foo` → 405 + `Allow: GET,HEAD`(라우트 존재를 광고) vs `PUT /api/x` → 404. 예약 경로 전체를 균일 404로 만드는 편이 표면 비노출 관점에서 더 안전하나, 이는 **의도적 행동 변경**이므로 gated-refactor가 아니라 별도 파이프라인 소관. 또한 `/healthz`·`/readyz` 정확 일치 라우트는 현재 wire에서 no-op(제거해도 동일) — 정리 후보. **R-6이 이 행동을 테스트로 핀했으므로, 바꾸려면 이제 의도적·가시적으로 해야 한다** | gated-pipeline(행동 변경) |
 | F-22 | 같은 "없음"인데 404 바디가 갈린다: `GET /healthz/foo` → `{"error":"not_found"}` JSON(핸들러의 `AppError::NotFound`), `GET /api/x/y` → 빈 바디(`any(not_found)`의 맨 `StatusCode`). 클라이언트가 바디 파싱으로 예약 경로의 종류를 구분할 수 있다 | gated-pipeline(행동 변경) |
 | F-23 | `catalog`의 `escape()`가 URL을 HTML 이스케이프로만 처리(public.rs) — 현재는 `segment_ok`의 문자 제한 덕에 안전하나, 방어가 layout.rs의 검증에만 의존하는 **원거리 결합**. 검증이 느슨해지면 `href` 컨텍스트에서 부족 | 관측만(검증 완화 시 재평가) |
+| F-24 | **도구 결함(이 저장소 밖)**: `gated-core`의 `releaseFreshnessBlocker` 화이트리스트가 `docs/reviews/<slug>/`뿐이라, 게이트 규약이 **요구하는** 계획서 기록(Decision Log 승인 줄 + `pipeline-stage: finishing`)이 곧바로 blocker를 유발한다 — 계획서를 안 건드리면 finishing에 못 가고, 건드리면 배리어가 문다(구조적 catch-22). 다섯 gated-* 컨덕터 전부가 매 릴리스마다 맞는다. 단순 허용은 위험(승인 후 Behavior Contract 개작 경로가 열림)하므로, frontmatter의 `pipeline-stage` 키와 Decision Log 섹션 **추가분만** 허용하는 정밀한 판정이 필요 | `~/.claude/skills/gated-core` 이슈(이 리팩터 범위 밖) |
 
 ## Review Decision Log
 
@@ -267,6 +268,41 @@ Clippy gate. Do not merge yet."*
 | R-1 | Missing verification: cargo clippy output — verification.md의 C4가 명령어·**합성된 `EXIT: 0`**·**손으로 추린 경고 위치 목록**만 담고 있어 Cargo/Clippy의 실제 stdout/stderr가 아니다. `cargo clippy --all-targets`는 그런 요약을 스스로 출력하지 않으므로, 검사가 최종 구현 트리에서 성공적으로 실행됐음을 아티팩트가 증명하지 못한다 | high (**Must Fix**) | **Accept**(인간 triage 2026-07-12) | 사실이다. 컨덕터가 rtk의 필터된 출력을 받아 경고 위치를 grep으로 추리고 exit 줄을 직접 적어 넣었다 — 요약이지 증거가 아니며 **machine-owns-GREEN 원칙**상 증거로 인정될 수 없다. 코드는 깨끗한데 **증거의 신빙성**이 걸린 사례로, 게이트가 제 기능을 했다 | C1·C2·C4를 **명령 원문 + 셸이 기계 기록한 exit code**로 교체 재커밋(`touch src/lib.rs`로 캐시 무효화 후 전량 재-lint). 증거 갱신 → capturing-evidence 재실행 → release round 2 |
 
 ### Codex Release Review — r2: clean — verdict approve, 0 findings, reviewedSha `085d16e` (docs/reviews/arch-deepening-2026-07/release-r2.json). *"Ship. R-1 is resolved: verification.md now contains Clippy's raw diagnostics, completion output, and shell-captured exit code 0. Commit 085d16e changes evidence/docs only; the source tree remains identical to bb7a73c, so the fix introduced no new critical issue."*
+
+### 배리어 면제 — release freshness (인간 승인, 2026-07-12)
+
+`refactor-status.mjs`의 `releaseFreshnessBlocker`가 stage `finishing`에서 blocker를
+냈다: *"Commit(s) after release approval touch non-bookkeeping path(s):
+docs/refactors/arch-deepening-2026-07.md."*
+
+**이것은 구조적 catch-22다.** 배리어의 화이트리스트는 `docs/reviews/<slug>/` 하나뿐인데,
+게이트 규약(codex-review-gates 절차 step 7)은 승인 결과를 **계획서의 Review Decision
+Log에 기록**하라고 요구하고, stage 키(`finishing`) 또한 계획서 frontmatter에 산다.
+즉 **계획서를 건드리지 않고는 `finishing`에 도달할 수 없고, 건드리면 배리어가 문다.**
+이 순서 충돌은 stage-runbook에도 해법이 없다.
+
+**면제 근거(기계 증거)** — 배리어의 명시된 목적은 *"a later non-bookkeeping commit
+means the gate reviewed a different diff"*, 즉 **승인 이후 코드 드리프트**를 막는 것이다.
+그 위험은 부재함이 증명된다:
+
+```
+$ git diff --stat 085d16e..HEAD -- src/ tests/ Cargo.toml Cargo.lock
+(출력 없음 — 소스·테스트·의존성 변경 0)
+
+$ git diff --name-only 085d16e..HEAD
+docs/reviews/arch-deepening-2026-07/release-r2.json      ← 게이트 자신의 아티팩트(화이트리스트 경로)
+docs/refactors/arch-deepening-2026-07.md                 ← stage 키 + r2 승인을 기록한 Decision Log 1줄
+```
+
+릴리스 게이트 r2가 승인한 **소스 트리와 HEAD의 소스 트리는 바이트 동일**하다(r2 자신도
+*"the source tree remains identical to bb7a73c"*라고 판정했다). 승인 후 바뀐 것은 게이트의
+verdict를 기록한 문서뿐이며, Behavior Contract·증분·characterization·증거는 한 글자도
+바뀌지 않았다.
+
+**인간 판정: 면제(waive).** 배리어는 fail-closed이고 인간만 해제할 수 있으므로, 컨덕터는
+자의로 넘어가지 않고 근거를 제시해 승인을 받았다. 동시에 이것은 **gated-core의 실제
+결함**이므로 별도 이슈로 파일링한다(F-24) — 다섯 컨덕터 전부가 매 릴리스마다 이 blocker를
+맞는다.
 
 ### 컨덕터측 증분 리뷰(`/code-review` 2축 — 게이트가 아니라 증분별 심사)
 
