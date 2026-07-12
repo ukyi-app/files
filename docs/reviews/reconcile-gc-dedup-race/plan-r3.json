@@ -1,0 +1,34 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "plan",
+  "verdict": "needs-attention",
+  "summary": "Do not ship. P-2, P-3, and the committed RED witness now look sound, but the new cohort wait can freeze reconciliation indefinitely. No materially simpler safe root fix was found.",
+  "planFile": "docs/bugfixes/reconcile-gc-dedup-race.md",
+  "planInDiff": true,
+  "reviewedFileCount": 1,
+  "target": "working tree diff",
+  "reviewedSha": "8776ac93ca875947b2ec53d5ef1ad9b43329b67c",
+  "reviewedTree": "c19a3eb407849956bc89c3874e2a37846cf180cc",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 1,
+  "planFindingCount": 1,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "Unbounded cohort wait can strand a committed object and halt GC",
+      "body": "The claimed `< gc_grace` bound is false. `upload_timeout` only drops the caller future; the plan deliberately moves `PinGuard` into a non-abortable `spawn_blocking` closure and retains it through write, rename, and fsync. A queued or stuck filesystem operation can therefore keep a cohort member live indefinitely. Because GC has already moved X to its grave, a stall after pointer rename leaves a real pointer returning 404 indefinitely, while `pass_lock` prevents every subsequent recovery/GC pass. T-C3 and T-B2 always release their hooks, so neither acceptance witness covers this failure.",
+      "file": "docs/bugfixes/reconcile-gc-dedup-race.md",
+      "line_start": 372,
+      "line_end": 374,
+      "confidence": 0.99,
+      "recommendation": "Specify bounded fail-closed settlement: notify and restore immediately once `landed` becomes true; otherwise time out a nonterminal cohort, restore or preserve the grave safely, release the pass, and emit an observable error. Add deterministic tests for never-released pins both before and after pointer rename, and characterize the resulting degraded-path GC deferral.",
+      "isPlanFinding": true
+    }
+  ],
+  "next_steps": [
+    "Revise the cohort timeout and recovery contract plus acceptance tests.",
+    "Run the approved scoped plan re-review again without executing machine-owned GREEN tests."
+  ]
+}
