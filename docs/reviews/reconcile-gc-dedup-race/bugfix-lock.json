@@ -9,7 +9,8 @@
   ],
   "scope": [
     "src/store/**",
-    "src/main.rs"
+    "src/main.rs",
+    "src/layout.rs"
   ],
   "red": { "sha": "65458082b6692acd0345763da96ef9a811ae745e" },
   "green": { "sha": "" },

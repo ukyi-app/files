@@ -1,0 +1,57 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "plan",
+  "verdict": "needs-attention",
+  "summary": "Do not ship this plan. The committed RED witness is valid and exercises the real symptom, but the proposed grave transition can recreate permanent data loss, the contract intentionally adds a second observable flip, and two claimed ordering proofs do not exercise their hazardous windows. No materially simpler safe fix was found; the rejected lock/recheck variants retain TOCTOU or introduce the documented blocking behavior.",
+  "planFile": "docs/bugfixes/reconcile-gc-dedup-race.md",
+  "planInDiff": true,
+  "reviewedFileCount": 1,
+  "target": "working tree diff",
+  "reviewedSha": "74a603feb2b253a639a2cdf96d4be409cb52498f",
+  "reviewedTree": "d60e17f68391ebd1cf887b443a0a60bea9c6f09e",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 3,
+  "planFindingCount": 3,
+  "findings": [
+    {
+      "severity": "critical",
+      "title": "A cancelled or failed reversible deletion can permanently strand the live blob",
+      "body": "After renaming X to `.objects/.tmp-<unique>`, the plan has no durable SHA mapping or recovery path if reconciliation is cancelled, the restore rename fails, or the process exits. A concurrent put may already have committed its pointer, leaving the only inode under the grave name. The next pass classifies that name as an upload temp and, because rename preserves the old blob mtime, may immediately delete it and count it as `temps_deleted`. This recreates the original permanent non-servable data loss during ordinary shutdown or I/O failure and also makes rollback unsafe.",
+      "file": "docs/bugfixes/reconcile-gc-dedup-race.md",
+      "line_start": 51,
+      "line_end": 61,
+      "confidence": 0.99,
+      "recommendation": "Use a distinct Layout-owned, SHA-bearing GC-grave namespace; fsync every rename/remove transition; recover leftover graves conservatively before normal reconciliation; and add fault-injection acceptance cases for cancellation, restore error, restart, and rollback. Expand scope to include `src/layout.rs`.",
+      "isPlanFinding": true
+    },
+    {
+      "severity": "high",
+      "title": "The declared after-state contains a second observable behavior flip",
+      "body": "The before-state concerns a dedup put that successfully gains a reference, but the after-state deliberately protects X even when the put fails or is cancelled. For an expired, unreferenced X, such a put leaves no pointer: today GC deletes it and reports `gc_deleted == 1`; the plan restores it and reports zero, and repeated failures can defer reclamation indefinitely. The deterministic pin witness even requires this behavior, while `flips[]` contains only the successful-put data-loss symptom. Under the single-flip rules, this is a separate capacity/statistics behavior, not another witness of the same bug.",
+      "file": "docs/bugfixes/reconcile-gc-dedup-race.md",
+      "line_start": 114,
+      "line_end": 122,
+      "confidence": 0.97,
+      "recommendation": "Either reroute this work to gated-pipeline and explicitly characterize both behaviors, or redesign the protocol so failed/cancelled operations without a possibly committed pointer do not create a pass-wide touched history while uncertain commit outcomes remain fail-closed.",
+      "isPlanFinding": true
+    },
+    {
+      "severity": "high",
+      "title": "The proposed tests cannot kill two load-bearing ordering mutants",
+      "body": "The committed regression intentionally starts puts after `collect_referenced`; therefore moving `begin_pass()` immediately after collection still activates the pass before every test put and can remain green. Its decoys likewise make puts finish before victim visitation, so a pre-rename `touched()` check sees the marker; no barrier places a put in the dangerous check-to-rename window. The deterministic witness holds its pin for the entire pass and covers neither case. Consequently the claimed mutant failures are not evidence, and either unsafe ordering can pass the stated gate while preserving the production race.",
+      "file": "docs/bugfixes/reconcile-gc-dedup-race.md",
+      "line_start": 187,
+      "line_end": 194,
+      "confidence": 0.98,
+      "recommendation": "Add deterministic real-call-site barriers for a put completing during reference collection and for a put landing between a precheck and rename. Also enforce ordering structurally—for example, require `PassGuard` to collect references and expose the touched decision only through a token returned after the grave rename.",
+      "isPlanFinding": true
+    }
+  ],
+  "next_steps": [
+    "Add durable grave recovery and cancellation/restart/rollback acceptance criteria.",
+    "Resolve the failed/cancelled-put behavior as a separate flip or narrow the protocol.",
+    "Replace the probabilistic mutant claims with deterministic call-site tests or type-enforced ordering, then repeat the plan review."
+  ]
+}
