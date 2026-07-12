@@ -3,7 +3,7 @@ refactor: arch-deepening-2026-07
 invariant-class: refactor
 entry-track: architecture
 review-track: full
-pipeline-stage: release-gate
+pipeline-stage: finishing
 issue-tracker: local
 behavior-baseline: c889f75ad3bc222ce4c13c7adfb103e54b87b534
 characterization-lock: done
@@ -265,6 +265,8 @@ Clippy gate. Do not merge yet."*
 | ID | Finding | Severity | Decision | Reason | Action |
 |----|---------|----------|----------|--------|--------|
 | R-1 | Missing verification: cargo clippy output — verification.md의 C4가 명령어·**합성된 `EXIT: 0`**·**손으로 추린 경고 위치 목록**만 담고 있어 Cargo/Clippy의 실제 stdout/stderr가 아니다. `cargo clippy --all-targets`는 그런 요약을 스스로 출력하지 않으므로, 검사가 최종 구현 트리에서 성공적으로 실행됐음을 아티팩트가 증명하지 못한다 | high (**Must Fix**) | **Accept**(인간 triage 2026-07-12) | 사실이다. 컨덕터가 rtk의 필터된 출력을 받아 경고 위치를 grep으로 추리고 exit 줄을 직접 적어 넣었다 — 요약이지 증거가 아니며 **machine-owns-GREEN 원칙**상 증거로 인정될 수 없다. 코드는 깨끗한데 **증거의 신빙성**이 걸린 사례로, 게이트가 제 기능을 했다 | C1·C2·C4를 **명령 원문 + 셸이 기계 기록한 exit code**로 교체 재커밋(`touch src/lib.rs`로 캐시 무효화 후 전량 재-lint). 증거 갱신 → capturing-evidence 재실행 → release round 2 |
+
+### Codex Release Review — r2: clean — verdict approve, 0 findings, reviewedSha `085d16e` (docs/reviews/arch-deepening-2026-07/release-r2.json). *"Ship. R-1 is resolved: verification.md now contains Clippy's raw diagnostics, completion output, and shell-captured exit code 0. Commit 085d16e changes evidence/docs only; the source tree remains identical to bb7a73c, so the fix introduced no new critical issue."*
 
 ### 컨덕터측 증분 리뷰(`/code-review` 2축 — 게이트가 아니라 증분별 심사)
 
