@@ -1,0 +1,31 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "structure",
+  "verdict": "needs-attention",
+  "summary": "Do not open R-2–R-6 yet: R-1 omits an existing temp-name producer, so the planned single-owner deletion test cannot be completed on this seam.",
+  "planFile": "docs/refactors/arch-deepening-2026-07.md",
+  "planInDiff": null,
+  "reviewedFileCount": 8,
+  "target": "branch diff against main",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 1,
+  "planFindingCount": 0,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "The temp-path seam cannot absorb the atomic writer",
+      "body": "`TMP_PREFIX` is private and the only authoring API hard-wires it to `root/.objects`. However, the plan's deletion evidence explicitly identifies `src/store/atomic.rs:8` as another `.tmp-` producer, and that writer creates temporary files in `.objects` when reconcile persists `.gc-pending.json`. No remaining increment migrates this producer, although R-2 requires `.tmp-` to disappear from `src/store`. The later work must therefore either leave the layout module non-deep and fail its acceptance condition, or reopen the skeleton interface. It also leaves a drift path where changing Layout's prefix makes interrupted atomic-write files classify as `Other` and evade temp cleanup.",
+      "file": "src/layout.rs",
+      "line_start": 97,
+      "line_end": 102,
+      "confidence": 0.98,
+      "recommendation": "Add a root-independent temp filename or sibling-path authoring operation to the layout seam, make `temp_blob_path` delegate to it, and explicitly include `atomic::write_atomic` as a real second consumer in R-2 while preserving the existing `.tmp-<unique>` bytes.",
+      "isPlanFinding": false
+    }
+  ],
+  "next_steps": [
+    "Revise the R-1 seam and R-2 increment plan, then rerun the structure review before opening the remaining DAG."
+  ]
+}

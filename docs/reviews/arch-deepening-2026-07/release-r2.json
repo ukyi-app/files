@@ -1,0 +1,19 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "release",
+  "verdict": "approve",
+  "summary": "Ship. R-1 is resolved: verification.md now contains Clippy’s raw diagnostics, completion output, and shell-captured exit code 0. Commit 085d16e changes evidence/docs only; the source tree remains identical to bb7a73c, so the fix introduced no new critical issue.",
+  "planFile": "docs/refactors/arch-deepening-2026-07.md",
+  "planInDiff": null,
+  "reviewedFileCount": 26,
+  "target": "branch diff against main",
+  "reviewedSha": "085d16ee30f6cd8d17a0cbfe3d3eff65f18f590c",
+  "reviewedTree": "fd8c0de7351b61ccd50d7d39e9f4fa4626ef933d",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 0,
+  "planFindingCount": 0,
+  "findings": [],
+  "next_steps": []
+}

@@ -1,3 +1,4 @@
+use crate::layout;
 use std::path::Path;
 use tokio::io::AsyncWriteExt;
 
@@ -5,7 +6,8 @@ use tokio::io::AsyncWriteExt;
 pub async fn write_atomic(target: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let parent = target.parent().expect("target has parent");
     mkdir_p_durable(parent).await?; // (발견 P3-1) 조상 디렉터리도 내구적으로 생성
-    let tmp = parent.join(format!(".tmp-{}", unique_suffix()));
+    // temp는 target의 형제(임의 부모 디렉터리) — 이름만 layout이 저작(root 비의존).
+    let tmp = parent.join(layout::temp_name(&unique_suffix()));
     {
         let mut f = tokio::fs::File::create(&tmp).await?;
         f.write_all(bytes).await?;

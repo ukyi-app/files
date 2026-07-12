@@ -3,12 +3,12 @@ refactor: arch-deepening-2026-07
 invariant-class: refactor
 entry-track: architecture
 review-track: full
-pipeline-stage: executing
+pipeline-stage: finishing
 issue-tracker: local
 behavior-baseline: c889f75ad3bc222ce4c13c7adfb103e54b87b534
 characterization-lock: done
 first-increment: [R-1]
-structure-gate: pending
+structure-gate: done
 increments: [R-1, R-2, R-3, R-4, R-5, R-6]
 spike-1:
 ---
@@ -51,6 +51,9 @@ pub fn valid_bucket(b: &str) -> Result<(), AppError>;   // invalid_bucket
 pub fn valid_key(k: &str) -> Result<(), AppError>;      // invalid_key | reserved_suffix
 pub(crate) const RESERVED_BUCKETS: &[&str];             // R-6이 public 라우트 파생에 사용
 pub(crate) const OBJECTS_DIR: &str;                     // buckets.rs 루트 스킵 1곳용
+pub(crate) fn temp_name(unique: &str) -> String;        // ".tmp-<unique>" — root 무관 이름 저작
+                                                        // (S-1) atomic::write_atomic처럼 임의 부모의
+                                                        // 형제로 temp를 두는 소비자용. temp 접두사의 유일 저작점.
 
 // ── 경로 만들기 (값 타입 — root를 한 번 묶음) ──
 #[derive(Clone)] pub struct Layout { root: PathBuf }
@@ -59,10 +62,16 @@ impl Layout {
     pub fn meta_for(&self, bucket, key) -> Result<PathBuf, AppError>; // 검증 포함
     pub fn blob_path(&self, sha: &str) -> PathBuf;        // root/.objects/<sha>
     pub fn objects_dir(&self) -> PathBuf;
-    pub fn temp_blob_path(&self, unique: &str) -> PathBuf; // root/.objects/.tmp-<u>
+    pub fn temp_blob_path(&self, unique: &str) -> PathBuf; // root/.objects/ + temp_name(u) 위임
     pub fn bucket_meta_path(&self, bucket) -> Result<PathBuf, AppError>;
     pub fn gc_pending_path(&self) -> PathBuf;
     pub fn corrupt_dir(&self) -> PathBuf;
+    pub(crate) fn root(&self) -> &Path;                   // (A-1) 베이스 디렉터리 노출 — 경로 저작 아님.
+                                                          // 소비자 3: buckets.rs list_buckets의 루트 열거(영구),
+                                                          // store/tests.rs의 temp-잔재 단언(영구 — raw 리터럴 유지),
+                                                          // listing.rs의 bucket_dir(R-3에서 소멸).
+// safe_object_path·meta_path는 pub이 아니라 pub(crate) — meta_for의 구현 세부이며
+// crate 외부에 Layout 우회 경로-저작을 노출하지 않는다(R-2 Standards 리뷰 S-2).
 
     // ── 이름 읽기 1: 커밋 포인터 워커 (지배 패턴 흡수) ──
     pub fn pointers_in_bucket(&self, bucket) -> Result<CommitPointerWalk, AppError>;
@@ -117,6 +126,27 @@ lib.rs의 `pub mod path`는 제거(→ `pub mod layout`) — crate 외부 소비
 (tests/·clients/ grep 검증, 2026-07-10). B10의 "보존"은 소비되는 표면(테스트가
 실제로 건너는 시그니처) 기준이다.
 
+**계획 개정 A-1**(2026-07-12, 인간 확정 — R-2 dispatch 전 발견): 위 인터페이스에
+`Layout::root()`를 추가한다. R-2가 `Store::root` 필드를 제거하는데 `buckets.rs`
+`list_buckets`의 루트 `read_dir` 열거(영구)와 `listing.rs`의 `bucket_dir` 계산
+(R-3에서 소멸)이 root 경로 자체를 요구하므로, 원안대로면 컴파일되지 않는다 —
+plan/structure 게이트가 놓친 공백. `root`는 온디스크 **이름·경로 규칙**이 아니라
+config 값이므로 노출해도 seam의 취지(`.objects`·`.tmp-`·`.bucket.json` 리터럴의
+단일 소유)는 유지되고, R-2가 제거하려는 **이중화**(Store와 Layout이 root를 각각
+보유)는 그대로 사라진다. 대안(Store가 root 병행 보유 / list_buckets의 루트 열거를
+layout으로 흡수)은 각각 증분 취지 위배 · 계획서 결정(`OBJECTS_DIR`를 "buckets.rs
+루트 스킵 1곳용"으로 pub(crate) 노출) 번복이라 기각.
+
+**계획 개정 A-2**(2026-07-12, R-2 Standards 리뷰 S-2 수용): `safe_object_path`·
+`meta_path`의 가시성을 `pub` → `pub(crate)`로 좁힌다. R-1은 store/mod.rs가 아직
+이 둘을 직접 소비했기에 pub을 유지했으나, R-2가 그 소비자를 `Layout::meta_for`
+위임으로 대체하며 crate 외부 소비자를 0으로 만들었다 — 남겨두면 Layout을 우회하는
+**공개** 경로-저작 통로가 되어 CONTEXT.md("Layout을 거치지 않은 경로 저작은 규칙
+위반")와 Target shape의 자유함수 공개 표면 목록(둘은 미포함 — `meta_for`의 구현
+세부)에 저촉된다. B10 무저촉(보존은 **소비되는** 표면 기준이고 외부 Rust 소비자
+0 — `publish = false`로 기계 보증). private이 아닌 pub(crate)인 이유는 R-4
+(reconcile)의 crate 내부 사용 여지를 남기기 위함.
+
 ## Behavior Contract
 
 증분 전 과정에서 변하면 안 되는 관측 행동. characterization이 핀하고 모든
@@ -166,11 +196,11 @@ seam.
 | id | what moves | blocked-by | notes |
 |---|---|---|---|
 | R-1 | `src/layout.rs` 신설: path.rs 흡수(fn·테스트 축자 이주) + Layout 경로 메서드 + classify_objects_entry + 상수 + CommitPointerWalk 워커 + 자체 단위 테스트(분류 테이블·round-trip 속성·워커 tempdir). path.rs 삭제, `crate::path::` 임포트 기계 갱신. Cargo.toml `publish = false` 명시(P-1 — 외부 소비자 부재의 기계 보증). 소비자 로직 무변경 | none | **first-increment** — seam 전체 기립, 자체 검증 포함 |
-| R-2 | Store가 `layout: Layout` 보유(root 이중화 제거), making-side 소비: objects.rs(blob·temp 경로) · buckets.rs(bucket_meta_path·OBJECTS_DIR) · store/mod.rs(blob_path 위임·meta_for 위임) · http/state.rs(.objects 생성 Layout 경유) | R-1 | |
+| R-2 | Store가 `layout: Layout` 보유(root 이중화 제거), making-side 소비: objects.rs(blob·temp 경로) · **atomic.rs(`write_atomic`의 temp 이름 → `layout::temp_name` — S-1)** · buckets.rs(bucket_meta_path·OBJECTS_DIR·root 열거) · store/mod.rs(blob_path 위임·meta_for 위임) · http/state.rs(.objects 생성 Layout 경유) + **`Layout::root()` 추가(A-1)** | R-1 | atomic writer = seam의 두 번째 소비자 |
 | R-3 | listing.rs → pointers_in_bucket 워커 소비(수동 DFS 루프 삭제) | R-2 | 에러 매핑은 단일 next() 지점 map_err(AppError::Internal) |
 | R-4 | reconcile: collect_referenced → pointers_all, `.objects` 스캔 → classify_objects_entry(O1 순서 준수), gc/corrupt/objects 경로 Layout 경유. run_once(root,…) 시그니처 불변 | R-1 | reconcile의 레이아웃 재유도 소멸 |
 | R-5 | KeyLocks::lock(bucket,key) 2인자 심화 — 포맷 locks.rs private, objects.rs 3곳 갱신 | R-2 | 같은 파일(objects.rs) 충돌 회피용 순서 |
-| R-6 | public.rs 예약 경로 404를 layout::RESERVED_BUCKETS에서 루프 파생 | R-1 | 두-목록 드리프트 종결(B9가 판정) |
+| R-6 | ~~public.rs 예약 경로 404를 layout::RESERVED_BUCKETS에서 루프 파생~~ → **개정 A-4**: 라우터 모양은 보존(비대칭 = 행위)하고, 라우트 패턴을 기계 판독 가능한 목록으로 뽑은 뒤 **정합성 테스트**(모든 예약 이름에 그림자 라우트 존재)로 드리프트를 잡는다 | R-1 | 원안은 행위 파손(실측 10셀) — A-4 참조. B9가 판정 |
 
 각 증분: 독립적으로 행위 보존, lock testCmd 초록 유지 → 커밋.
 
@@ -186,6 +216,22 @@ seam.
 | F-6 | authz seam(후보 3) · 쓰기 경로 이중화(후보 4) · 응답 헤더 응집(후보 5) · OpenAPI C3(후보 6) | 후속 후보 풀 |
 | F-7 | 성능 후보군: dedup 전체 재독 · blocking statvfs · 카탈로그 N+1 · reconcile 전량 스캔 · KeyLocks 무한 성장 | gated-perf(metric 선언 시) |
 | F-8 | buckets.rs list_buckets의 `.objects` 스킵 — classify_root_entry는 미구축 결정(소비자 1), OBJECTS_DIR 상수로 충족 | 기록만 |
+| F-9 | 손상 커밋 포인터 은폐: `Store::head`가 파싱 불가 meta JSON을 `NotFound`로 매핑(objects.rs:116)하고, reconcile은 손상 **블롭**만 격리하고 손상 **포인터**는 격리하지 않아 해당 키가 영구 비가시·미복구(R-2 중 발견, 현행 스위트가 핀하는 기존 행동이라 보존) | gated-bugfix |
+| F-10 | `list_buckets`가 루트 `read_dir` 에러를 `Ok(vec![])`로 삼킴(buckets.rs:25) — 권한 오류·데이터 디렉터리 부재가 "버킷 0개"로 보고됨(R-2 중 발견, 기존 행동 보존) | gated-bugfix |
+| F-11 | 비-UTF-8 파일명이 키를 조용히 손상: key 복원이 `to_string_lossy()`(layout.rs) 경유라 U+FFFD를 품은 키가 나오고, 그 키로 GET하면 404 — 목록과 실물이 어긋남(R-3 중 발견, R-1이 워커로 이관하며 승계한 기존 행동) | gated-bugfix |
+| F-12 | 손상 meta의 무-신호 소멸: 읽기·파싱 실패가 로그·카운터 없이 `continue`라 bit-rot된 `*.meta.json`이 list에서 그냥 사라짐(B5 조용한 skip 규칙 자체는 의도이나 관측 훅이 전무) | 관측성 후속 |
+| F-13 | 하위 디렉터리 1개의 `EACCES`가 목록 전체를 `Internal`(500)로 실패시킴 — 부분 목록으로 degrade하지 않음. 워커를 공유하는 reconcile(R-4)도 같은 all-or-nothing 승계 | gated-bugfix(설계 판단 필요) |
+| F-14 | reconcile의 `.objects` 스냅샷이 순회 중 변경에 방어되지 않음: 스냅샷 후 per-entry `read`/`metadata` 사이에 동시 `put_stream`이 `.tmp-*`를 최종 blob 이름으로 rename하면 사라진 경로에 대한 `read`가 `ENOENT`를 하드 io::Error로 전파해 **reconcile 패스 전체가 중단**(항목 스킵이 아니라). R-4 중 발견, 기존 행동 보존 | gated-bugfix |
+| F-15 | 격리 충돌: `corrupt_dir.join(&name)`이 같은 sha의 기존 격리본을 덮어써 앞선 포렌식 사본을 조용히 파기 | gated-bugfix |
+| F-16 | 유휴 스토어에서도 매 reconcile 틱마다 `.gc-pending.json`을 무조건 `write_atomic`(temp 생성 + fsync churn) — `cleaned`가 불변·공집합이어도 수행 | gated-perf(metric 선언 시) |
+| F-17 | 상위 adversarial 동시성 테스트가 **단일 버킷(`"skills"`)에서만** 돈다 — 호출부가 버킷을 잘못 넘기는 회귀(상수 전달 등)를 상위 층이 변별 못 함. R-5가 unit 층에 버킷 축을 핀했으나 2-버킷 동시성 케이스는 여전히 부재 | 테스트 보강 후속 |
+| F-18 | `KeyLocks`의 락 맵이 무한 증가 — 엔트리가 한 번도 제거되지 않아 프로세스 수명 동안 distinct `bucket/key`가 영구 잔류(장수 홈랩 프로세스에서 실질 누수). 수정에 refcount eviction 필요(경합 까다로움) | gated-refactor 후속(F-7 성능군과 인접) |
+| F-19 | `put_stream` 성공 후 `rename`/`fsync_dir` 실패 시 `?` 조기 반환이 temp를 정리하지 않아 `.tmp-*` 잔류(reconcile grace 정리에 의존) | gated-bugfix |
+| F-20 | blob 소실 시 에러 불일치: `open`은 `NotFound`(404), `get_bytes`는 `Internal`(500) — head 확인과 read 사이 TOCTOU 창에서 같은 원인에 다른 상태 코드 | gated-bugfix |
+| F-21 | 공개 표면 예약 경로의 **응답 비대칭**(R-6 실측): `PUT /healthz/foo` → 405 + `Allow: GET,HEAD`(라우트 존재를 광고) vs `PUT /api/x` → 404. 예약 경로 전체를 균일 404로 만드는 편이 표면 비노출 관점에서 더 안전하나, 이는 **의도적 행동 변경**이므로 gated-refactor가 아니라 별도 파이프라인 소관. 또한 `/healthz`·`/readyz` 정확 일치 라우트는 현재 wire에서 no-op(제거해도 동일) — 정리 후보. **R-6이 이 행동을 테스트로 핀했으므로, 바꾸려면 이제 의도적·가시적으로 해야 한다** | gated-pipeline(행동 변경) |
+| F-22 | 같은 "없음"인데 404 바디가 갈린다: `GET /healthz/foo` → `{"error":"not_found"}` JSON(핸들러의 `AppError::NotFound`), `GET /api/x/y` → 빈 바디(`any(not_found)`의 맨 `StatusCode`). 클라이언트가 바디 파싱으로 예약 경로의 종류를 구분할 수 있다 | gated-pipeline(행동 변경) |
+| F-23 | `catalog`의 `escape()`가 URL을 HTML 이스케이프로만 처리(public.rs) — 현재는 `segment_ok`의 문자 제한 덕에 안전하나, 방어가 layout.rs의 검증에만 의존하는 **원거리 결합**. 검증이 느슨해지면 `href` 컨텍스트에서 부족 | 관측만(검증 완화 시 재평가) |
+| F-24 | **도구 결함(이 저장소 밖)**: `gated-core`의 `releaseFreshnessBlocker` 화이트리스트가 `docs/reviews/<slug>/`뿐이라, 게이트 규약이 **요구하는** 계획서 기록(Decision Log 승인 줄 + `pipeline-stage: finishing`)이 곧바로 blocker를 유발한다 — 계획서를 안 건드리면 finishing에 못 가고, 건드리면 배리어가 문다(구조적 catch-22). 다섯 gated-* 컨덕터 전부가 매 릴리스마다 맞는다. 단순 허용은 위험(승인 후 Behavior Contract 개작 경로가 열림)하므로, frontmatter의 `pipeline-stage` 키와 Decision Log 섹션 **추가분만** 허용하는 정밀한 판정이 필요 | `~/.claude/skills/gated-core` 이슈(이 리팩터 범위 밖) |
 
 ## Review Decision Log
 
@@ -201,4 +247,81 @@ seam.
 |----|---------|----------|----------|--------|--------|
 | P-4 | P-2 reconciliation characterization이 심링크에 의존하지 않음(동어반복) | critical | Accept (인간 승인, 수동 r3) | real 포인터가 같은 sha를 참조해 reconcile 단언이 심링크 무시 회귀를 변별 못 함 — 데이터 손실급 회귀를 lock이 놓치는 구멍 | 심링크를 유일 포인터로 재구성(referenced:2·gc_pending:0·블롭 생존 단언), 커밋 c889f75, lock 갱신(baseline c889f75·94 green) |
 
+### Codex Structure Review — r1 (verdict: needs-attention · docs/reviews/arch-deepening-2026-07/structure-r1.json)
+| ID | Finding | Severity | Decision | Reason | Action |
+|----|---------|----------|----------|--------|--------|
+| S-1 | temp-경로 seam이 atomic writer를 흡수할 수 없음(atomic.rs:8이 미이관 `.tmp-` 생산자 — R-2 acceptance 원리적 불충족, 접두사 드리프트 시 중단된 atomic-write 파일이 temp 정리 회피) | high (Blocker) | Accept | 계획의 스미어 목록이 atomic.rs:8을 열거해 놓고 어떤 증분도 이관하지 않은 진짜 구멍 — Layout이 "온디스크 이름의 단일 소유자"라는 헌장을 못 지킴 | R-1 seam 보강: layout에 root-비의존 `temp_name(unique)` 추가(`.tmp-` 유일 저작점), `temp_blob_path`가 위임; R-2에 atomic.rs 이관 항목 + acceptance 추가(atomic writer = seam 두 번째 소비자); 계획 인터페이스·증분표 갱신 → structure r2 |
+
+### Codex Structure Review — r2: clean — verdict approve, 0 findings, reviewedSha bcd86ce. "S-1 is resolved: temp_name centralizes prefix authoring, temp_blob_path delegates to it, and R-2 now requires atomic.rs as the real second consumer. Characterization tests were not weakened, and no new critical issue was introduced."
+(Codex 주: 샌드박스가 read-only라 cargo test를 독립 재실행하지 못함 — machine-owns-GREEN 원칙대로 lock testCmd 실행은 컨덕터 몫이며, 아래 구조-게이트 후 재검증에서 101 green 확인. verification 단계가 다시 전량 재실행한다.)
+
 ### Codex Plan Review — r3: clean — verdict approve, 0 findings. "P-4 is resolved. The symlink is now the sole metadata pointer to a distinct blob, so ignoring symlinks changes referenced from 2 to 1 and gc_pending from 0 to 1."
+
+### Codex Release Review — r1 (verdict: needs-attention · docs/reviews/arch-deepening-2026-07/release-r1.json)
+
+reviewedSha `f490749` · 리뷰 파일 25개 · findings 1 · Codex 요약: *"No code-level
+regression was found, but the release evidence does not machine-prove the required
+Clippy gate. Do not merge yet."*
+
+| ID | Finding | Severity | Decision | Reason | Action |
+|----|---------|----------|----------|--------|--------|
+| R-1 | Missing verification: cargo clippy output — verification.md의 C4가 명령어·**합성된 `EXIT: 0`**·**손으로 추린 경고 위치 목록**만 담고 있어 Cargo/Clippy의 실제 stdout/stderr가 아니다. `cargo clippy --all-targets`는 그런 요약을 스스로 출력하지 않으므로, 검사가 최종 구현 트리에서 성공적으로 실행됐음을 아티팩트가 증명하지 못한다 | high (**Must Fix**) | **Accept**(인간 triage 2026-07-12) | 사실이다. 컨덕터가 rtk의 필터된 출력을 받아 경고 위치를 grep으로 추리고 exit 줄을 직접 적어 넣었다 — 요약이지 증거가 아니며 **machine-owns-GREEN 원칙**상 증거로 인정될 수 없다. 코드는 깨끗한데 **증거의 신빙성**이 걸린 사례로, 게이트가 제 기능을 했다 | C1·C2·C4를 **명령 원문 + 셸이 기계 기록한 exit code**로 교체 재커밋(`touch src/lib.rs`로 캐시 무효화 후 전량 재-lint). 증거 갱신 → capturing-evidence 재실행 → release round 2 |
+
+### Codex Release Review — r2: clean — verdict approve, 0 findings, reviewedSha `085d16e` (docs/reviews/arch-deepening-2026-07/release-r2.json). *"Ship. R-1 is resolved: verification.md now contains Clippy's raw diagnostics, completion output, and shell-captured exit code 0. Commit 085d16e changes evidence/docs only; the source tree remains identical to bb7a73c, so the fix introduced no new critical issue."*
+
+### 배리어 면제 — release freshness (인간 승인, 2026-07-12)
+
+`refactor-status.mjs`의 `releaseFreshnessBlocker`가 stage `finishing`에서 blocker를
+냈다: *"Commit(s) after release approval touch non-bookkeeping path(s):
+docs/refactors/arch-deepening-2026-07.md."*
+
+**이것은 구조적 catch-22다.** 배리어의 화이트리스트는 `docs/reviews/<slug>/` 하나뿐인데,
+게이트 규약(codex-review-gates 절차 step 7)은 승인 결과를 **계획서의 Review Decision
+Log에 기록**하라고 요구하고, stage 키(`finishing`) 또한 계획서 frontmatter에 산다.
+즉 **계획서를 건드리지 않고는 `finishing`에 도달할 수 없고, 건드리면 배리어가 문다.**
+이 순서 충돌은 stage-runbook에도 해법이 없다.
+
+**면제 근거(기계 증거)** — 배리어의 명시된 목적은 *"a later non-bookkeeping commit
+means the gate reviewed a different diff"*, 즉 **승인 이후 코드 드리프트**를 막는 것이다.
+그 위험은 부재함이 증명된다:
+
+```
+$ git diff --stat 085d16e..HEAD -- src/ tests/ Cargo.toml Cargo.lock
+(출력 없음 — 소스·테스트·의존성 변경 0)
+
+$ git diff --name-only 085d16e..HEAD
+docs/reviews/arch-deepening-2026-07/release-r2.json      ← 게이트 자신의 아티팩트(화이트리스트 경로)
+docs/refactors/arch-deepening-2026-07.md                 ← stage 키 + r2 승인을 기록한 Decision Log 1줄
+```
+
+릴리스 게이트 r2가 승인한 **소스 트리와 HEAD의 소스 트리는 바이트 동일**하다(r2 자신도
+*"the source tree remains identical to bb7a73c"*라고 판정했다). 승인 후 바뀐 것은 게이트의
+verdict를 기록한 문서뿐이며, Behavior Contract·증분·characterization·증거는 한 글자도
+바뀌지 않았다.
+
+**인간 판정: 면제(waive).** 배리어는 fail-closed이고 인간만 해제할 수 있으므로, 컨덕터는
+자의로 넘어가지 않고 근거를 제시해 승인을 받았다. 동시에 이것은 **gated-core의 실제
+결함**이므로 별도 이슈로 파일링한다(F-24) — 다섯 컨덕터 전부가 매 릴리스마다 이 blocker를
+맞는다.
+
+### 컨덕터측 증분 리뷰(`/code-review` 2축 — 게이트가 아니라 증분별 심사)
+
+R-1 first-increment는 structure 게이트가 심사했다(위). R-2 이후의 증분은 컨덕터가
+증분 시작 SHA를 fixed point로 2축 리뷰하고, 그 판정을 여기 남긴다 — 릴리스 게이트가
+같은 논점을 재론하지 않도록.
+
+| ID | 증분 | Finding | Decision | Reason |
+|----|------|---------|----------|--------|
+| A-1 | R-2 (dispatch 전) | `Store::root` 제거 시 buckets.rs 루트 열거(영구)·listing.rs bucket_dir(R-3에서 소멸)이 root를 잃어 컴파일 불가 — plan·structure 게이트가 놓친 인터페이스 공백 | **Accept**(인간 확정) | root는 온디스크 이름 규칙이 아니라 config 값 → 노출해도 seam 취지 불변, 제거 대상인 **이중화**만 소멸. `Layout::root()` 추가 |
+| S-2 | R-2 (Standards) | R-2가 `safe_object_path`·`meta_path`의 마지막 외부 소비자를 제거 → 소비자 0인 **`pub` 경로-저작 함수**로 잔존 | **Accept** | Layout을 우회하는 **공개** 경로-저작 통로 = CONTEXT.md 위반 + Target shape 자유함수 목록 미포함 + YAGNI 규칙. → `pub(crate)`(**A-2**). B10 무저촉(보존은 소비되는 표면 기준, 외부 소비자 0) |
+| — | R-2 (Standards) | `Store::meta_for` 사적 1줄 위임 = 경미한 Middle Man | **Reject** | 호출부 5곳 간결성 유지가 이득. 제거하면 layout 체인이 store 전역으로 확산. 리뷰어도 coin-flip 표기 |
+| — | R-2 (Spec) | 대상 파일의 **doc 주석**에 `.objects` 등 리터럴 잔존 | **Reject** | 이름을 저작하지 않는 서술 — 온디스크 계약을 드리프트시킬 수 없다(S-1의 요지는 **저작점** 단일화). layout.rs도 같은 방식으로 상수를 문서화 |
+| — | R-3 (Standards) | R-3이 `valid_bucket`·`valid_key`의 마지막 `use`를 제거 → layout.rs 밖 코드 소비자 0인데 여전히 `pub`. A-2를 따라 `pub(crate)`로 좁힐 것인가 | **Reject** | A-2와 결정적으로 다르다: 이 둘은 **Target shape가 `pub fn`으로 명시 핀**했고(`safe_object_path`/`meta_path`는 목록에 없었다), **순수 검증자**라 CONTEXT.md가 금하는 "Layout 우회 경로 저작"이 원천 불가능하다. 게이트 승인된 핀을 필요 없이 뒤집지 않는다 |
+| — | R-3 (Standards) | `src/http/internal/files.rs:28`이 R-1에서 삭제된 `src/path.rs`를 doc 주석에서 참조 | **Accept** | 죽은 모듈 참조. R-3 범위가 아닌 R-1 잔재이므로 별도 커밋 `d764629`로 분리 수정 |
+| A-3 | R-4 (Standards) | A-2가 `safe_object_path`·`meta_path`를 private이 아닌 `pub(crate)`로 둔 근거는 **"R-4의 crate 내부 사용 여지"**였는데, R-4가 **둘 다 소비하지 않았다**(유일 호출자는 여전히 `Layout::meta_for`) — 유예 사유 해소 | **Accept**(R-6 이후 정리 커밋으로 유예) | 스스로 명시한 유예 조건이 만족됐으므로 module-private으로 축소. R-5·R-6이 소비할 가능성을 완전히 배제한 뒤 닫기 위해 전 증분 완료 후 실행(verification 전) |
+| — | R-5 (Standards) | R-5가 도입한 `bucket` 인자를 **어떤 테스트도 핀하지 않음** — 뮤턴트 `lock_key(_bucket, key) = key`가 locks.rs 3개 테스트와 상위 adversarial 앵커를 전부 통과(앵커가 단일 버킷에서만 돌기 때문). 게다가 R-5가 `different_keys_independent`의 축을 좁힘 | **Accept** | seam이 만든 핵심 성질(버킷이 락 키에 참여)이 무방비. 버킷 축 단언 + `bucket_participates_in_lock_key` 추가, **뮤턴트에서 FAIL함을 실증**. 기존 단언 무변경 — **강화이지 약화가 아니므로 anti-cheat 무저촉**(스위트 101→102). 상위 층의 2-버킷 동시성 갭은 F-17로 파일링 |
+| — | R-5 (Standards) | `(bucket, key)` Data Clump — `ObjectRef` newtype 후보 | **Reject** | 계획서 **의도적 미구축** 목록이 같은 논리(BlobName newtype, "소비자 0 = hypothetical interface")로 명시 배제. 이 파이프라인 범위 밖 |
+| **A-4** | R-6 (dispatch 전, 실측) | **계획서의 R-6 전제가 거짓**: "동일한 3개 라우트가 등록되므로 관측 행동 동일"이 틀렸다. 3라우트는 모양이 **비대칭**(`api`=서브트리, `healthz`/`readyz`=정확 일치)이고 그 비대칭이 곧 행위다 — `PUT/POST/DELETE/OPTIONS /healthz/foo`는 현재 **405 + `Allow: GET,HEAD`**(예약 라우트 부재 → `/{bucket}/{*key}`의 `get()` 전용 라우터 매칭). `RESERVED_BUCKETS` 균일 루프 파생은 6개 라우트를 등록하고 **10셀**(상태코드 8 + 바디 2)을 바꾼다 | **Accept — 원안 폐기**(인간 확정) | wire 레벨 실측(axum 0.8.9, `axum::serve` + raw TCP)으로 확정. 이름만 담은 목록에서 모양의 비대칭은 **파생 불가**(균일 등록 모양 4가지 전부 파손 — 증명). 대안(layout이 axum 라우트 문법 소유)도 기각: `/api/{*rest}`는 **온디스크 지식이 아니며** CONTEXT.md의 Layout 정의(온디스크 이름·경로의 단일 소유자)와 충돌 — 한 누수를 다른 누수로 교체하는 셈. → **라우터 모양 보존 + 정합성 테스트**로 전환(관심사 분리: 이름=layout, 모양=public.rs, 테스트가 결속). 부수 발견: 행동을 지탱하는 예약 라우트는 `/api/{*rest}` 하나뿐이고 `/healthz`·`/readyz` 정확 일치 라우트는 wire에서 fallback과 구별 불가능한 **no-op** |
+
+R-2 Spec 축·R-3 Spec 축 모두 **clean**(Blocker/Major 0). 증분별 상세 근거는 각
+`docs/increments/arch-deepening-2026-07/R-*.md`의 Result에 있다.

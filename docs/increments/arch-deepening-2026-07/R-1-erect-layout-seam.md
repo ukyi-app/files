@@ -1,11 +1,11 @@
 ---
 id: R-1
 title: src/layout.rs 기립 — path.rs 흡수 + 경로 메서드 + 분류기 + 커밋 포인터 워커
-status: open
+status: done
 blocked-by: [none]
 plan: docs/refactors/arch-deepening-2026-07.md
 created: 2026-07-10
-closed:
+closed: 2026-07-10
 ---
 
 ## What moves
@@ -42,3 +42,7 @@ seam 전체를 한 번에 세운다(소비자 로직 무변경 — 이후 증분
 
 ## Result
 
+커밋 dbb9efa. cargo test 100 passed(94 baseline + layout 신규 6) · clippy 신규 경고 0.
+/code-review: Spec clean(이주 단언 바이트 동일·W1-W5 구현 확인), Standards 판단성 4건 중
+1건(모듈 내 리터럴 중복·unwrap 결합) fix 반영 — 온디스크 리터럴 각 1회 정의로 상수화.
+과도기 중복(Layout↔Store/reconcile 경로 저작)은 계획 승인 스캐폴딩 — R-2~R-4가 해소.

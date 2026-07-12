@@ -19,7 +19,7 @@ impl Store {
     ) -> Result<ObjectMeta, AppError> {
         let meta_target = self.meta_for(bucket, key)?; // 검증 포함
         let sha = hex::encode(Sha256::digest(&bytes));
-        let _g = self.locks.lock(&format!("{bucket}/{key}")).await; // 같은 키 쓰기 직렬화
+        let _g = self.locks.lock(bucket, key).await; // 같은 키 쓰기 직렬화
         // 1) 불변 blob. 있으면 무결성 검증 후 재사용; 손상(sha 불일치)이면 덮어써 치유.
         //    (발견 P3-2: 무검증 dedup은 손상 blob을 재사용·서빙)
         let blob = self.blob_path(&sha);
@@ -63,13 +63,13 @@ impl Store {
         E: std::fmt::Display,
     {
         let meta_target = self.meta_for(bucket, key)?; // 검증
-        let _g = self.locks.lock(&format!("{bucket}/{key}")).await;
+        let _g = self.locks.lock(bucket, key).await;
 
-        let objects_dir = self.root.join(".objects");
+        let objects_dir = self.layout.objects_dir();
         atomic::mkdir_p_durable(&objects_dir)
             .await
             .map_err(AppError::Internal)?;
-        let tmp = objects_dir.join(format!(".tmp-{}", atomic::unique_suffix()));
+        let tmp = self.layout.temp_blob_path(&atomic::unique_suffix());
 
         let (size, sha) = match stream_to_temp(&tmp, stream, max).await {
             Ok(v) => v,
@@ -151,7 +151,7 @@ impl Store {
 
     pub async fn delete(&self, bucket: &str, key: &str) -> Result<(), AppError> {
         let mp = self.meta_for(bucket, key)?;
-        let _g = self.locks.lock(&format!("{bucket}/{key}")).await;
+        let _g = self.locks.lock(bucket, key).await;
         // 커밋 포인터만 제거 → 즉시 사라짐. blob은 reconciliation이 미참조 GC.
         match tokio::fs::remove_file(&mp).await {
             Ok(()) => {

@@ -72,7 +72,8 @@ fn byte_stream(
 }
 
 async fn no_temp_residue(s: &Store) {
-    let objects = s.root.join(".objects");
+    // 온디스크 바이트를 핀하려 raw 리터럴 유지(layout 상수 경유 시 동어반복).
+    let objects = s.layout.root().join(".objects");
     if !tokio::fs::try_exists(&objects).await.unwrap() {
         return;
     }

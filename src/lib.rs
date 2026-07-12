@@ -5,5 +5,5 @@ pub mod config;
 pub mod error;
 pub mod http;
 pub mod meta;
-pub mod path;
+pub mod layout;
 pub mod store;
