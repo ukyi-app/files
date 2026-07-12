@@ -3,7 +3,7 @@ bugfix: reconcile-gc-dedup-race
 invariant-class: bugfix       # Rule 0: 관측 행동이 정확히 하나 뒤집힌다(살아있는 블롭이 GC됨 → 안 됨)
 entry-track: bug
 review-track: full            # 데이터 손실 + 동시성 + 스토리지 표면 → full(세 게이트 전부)
-pipeline-stage: intake
+pipeline-stage: diagnose
 issue-tracker: local
 worktree:
 branch:
