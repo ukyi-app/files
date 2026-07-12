@@ -1,0 +1,34 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "plan",
+  "verdict": "needs-attention",
+  "summary": "Do not ship. The committed RED record matches `red.sha`, its tree, and the exact DATA LOSS assertion, but P-4's T-P4b witness is red for the wrong reason and does not exercise settlement. No other new critical P-4 issue found. Simpler alternative: none; repair the test choreography without changing the fix model. Open question: none.",
+  "planFile": "docs/bugfixes/reconcile-gc-dedup-race.md",
+  "planInDiff": true,
+  "reviewedFileCount": 1,
+  "target": "working tree diff",
+  "reviewedSha": "cdbac3b420b1434ee637dcf336de06d90f35bf16",
+  "reviewedTree": "3a544d2a0dc6419ba9ce34dbc28bab92eb0a6d2a",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 1,
+  "planFindingCount": 1,
+  "findings": [
+    {
+      "severity": "critical",
+      "title": "T-P4b lands the pointer before the reference snapshot",
+      "body": "Steps 2–4 establish that the metadata rename and `landed` insertion completed before starting `run_once_at`. The plan's own execution order collects references before processing blobs, so that snapshot will include the now-visible pointer. Reconciliation therefore takes the referenced branch and never calls `grave()` or `settle()`. The expected restore log will be absent, making T-P4b red because its setup bypasses the target seam; without that assertion it could remain green even if landed-first restoration were removed. This proves neither immediate restoration nor the no-404 P-4 seal.",
+      "file": "docs/bugfixes/reconcile-gc-dedup-race.md",
+      "line_start": 1282,
+      "line_end": 1291,
+      "confidence": 0.99,
+      "recommendation": "Start reconciliation first and park it at `pre_grave`, after `collect_referenced` has missed the pointer. Then advance the put through pointer rename and park it at `in_commit_post_landed`; release `pre_grave` and assert that settlement restores immediately while the pin remains live. If landed notification remains load-bearing, add an ordering where settlement is already waiting when the rename lands so removing `notify_waiters()` is deterministically RED.",
+      "isPlanFinding": true
+    }
+  ],
+  "next_steps": [
+    "Correct T-P4b's ordering and assertions without expanding beyond P-4.",
+    "Run the approved scoped plan re-review again; leave machine-owned regression and GREEN execution untouched."
+  ]
+}
