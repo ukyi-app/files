@@ -1,0 +1,34 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "release",
+  "verdict": "needs-attention",
+  "summary": "No code-level regression was found, but the release evidence does not machine-prove the required Clippy gate. Do not merge yet.",
+  "planFile": "docs/refactors/arch-deepening-2026-07.md",
+  "planInDiff": null,
+  "reviewedFileCount": 25,
+  "target": "branch diff against main",
+  "reviewedSha": "f4907496191307124e724f0c0d91accd6fda2d0f",
+  "reviewedTree": "f84397122248eee5a0359b3c46e06b13beb37b74",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 1,
+  "planFindingCount": 0,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "Missing verification: cargo clippy output",
+      "body": "The C4 block contains a command, a synthesized `EXIT: 0` summary, and a hand-curated warning-location list—not Cargo/Clippy's actual stdout or stderr. Because `cargo clippy --all-targets` does not emit that summary itself, the artifact cannot prove the check ran successfully against the final implementation tree. This leaves a required release claim unverifiable.",
+      "file": "docs/reviews/arch-deepening-2026-07/verification.md",
+      "line_start": 110,
+      "line_end": 120,
+      "confidence": 0.99,
+      "recommendation": "Run `cargo clippy --all-targets` on the final implementation tree and commit its verbatim stdout/stderr with a machine-captured exit status, then rerun the release review.",
+      "isPlanFinding": false
+    }
+  ],
+  "next_steps": [
+    "Refresh the committed C4 evidence with raw command output and exit status.",
+    "Rerun the release gate; no code-level blocker was otherwise found."
+  ]
+}

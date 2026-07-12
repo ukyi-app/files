@@ -256,6 +256,16 @@ seam.
 
 ### Codex Plan Review — r3: clean — verdict approve, 0 findings. "P-4 is resolved. The symlink is now the sole metadata pointer to a distinct blob, so ignoring symlinks changes referenced from 2 to 1 and gc_pending from 0 to 1."
 
+### Codex Release Review — r1 (verdict: needs-attention · docs/reviews/arch-deepening-2026-07/release-r1.json)
+
+reviewedSha `f490749` · 리뷰 파일 25개 · findings 1 · Codex 요약: *"No code-level
+regression was found, but the release evidence does not machine-prove the required
+Clippy gate. Do not merge yet."*
+
+| ID | Finding | Severity | Decision | Reason | Action |
+|----|---------|----------|----------|--------|--------|
+| R-1 | Missing verification: cargo clippy output — verification.md의 C4가 명령어·**합성된 `EXIT: 0`**·**손으로 추린 경고 위치 목록**만 담고 있어 Cargo/Clippy의 실제 stdout/stderr가 아니다. `cargo clippy --all-targets`는 그런 요약을 스스로 출력하지 않으므로, 검사가 최종 구현 트리에서 성공적으로 실행됐음을 아티팩트가 증명하지 못한다 | high (**Must Fix**) | **Accept**(인간 triage 2026-07-12) | 사실이다. 컨덕터가 rtk의 필터된 출력을 받아 경고 위치를 grep으로 추리고 exit 줄을 직접 적어 넣었다 — 요약이지 증거가 아니며 **machine-owns-GREEN 원칙**상 증거로 인정될 수 없다. 코드는 깨끗한데 **증거의 신빙성**이 걸린 사례로, 게이트가 제 기능을 했다 | C1·C2·C4를 **명령 원문 + 셸이 기계 기록한 exit code**로 교체 재커밋(`touch src/lib.rs`로 캐시 무효화 후 전량 재-lint). 증거 갱신 → capturing-evidence 재실행 → release round 2 |
+
 ### 컨덕터측 증분 리뷰(`/code-review` 2축 — 게이트가 아니라 증분별 심사)
 
 R-1 first-increment는 structure 게이트가 심사했다(위). R-2 이후의 증분은 컨덕터가
