@@ -1,0 +1,45 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "plan",
+  "verdict": "needs-attention",
+  "summary": "Do not ship: P-7 itself is resolved and the committed RED witness remains sound, but the class sweep still contains a no-op recovery test and unobserved post-park failures. Simpler alternative: none for P-7 beyond the implemented bounded await. Open question: none.",
+  "planFile": "docs/bugfixes/reconcile-gc-dedup-race.md",
+  "planInDiff": true,
+  "reviewedFileCount": 1,
+  "target": "working tree diff",
+  "reviewedSha": "7fd55ed57407035e4a45e41c8cd44c59730459b8",
+  "reviewedTree": "8f6792eca69827aca8abf578261d74b76a6edc99",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 2,
+  "planFindingCount": 2,
+  "findings": [
+    {
+      "severity": "critical",
+      "title": "T-B5④ discards the async grave operation without executing it",
+      "body": "`PassGuard::grave` is async, but `let _ = pass.grave(..)` drops its unpolled future. No blob-to-grave rename occurs, so after `drop(pass)` the next pass can find the original healthy blob and let the test pass even if `recover_graves` is broken. The intended fail-closed witness therefore proves nothing.",
+      "file": "docs/bugfixes/reconcile-gc-dedup-race.md",
+      "line_start": 1923,
+      "line_end": 1927,
+      "confidence": 0.99,
+      "recommendation": "Await `pass.grave(&sha)`, assert success and the pre-recovery disk state (one grave and no canonical blob), discard the resulting `Graved`, then drop `pass` and run recovery.",
+      "isPlanFinding": true
+    },
+    {
+      "severity": "high",
+      "title": "The intentionally parked put handles still swallow teardown failures",
+      "body": "The sweep exempts T-P4a and T-P4b-1/-2 because it claims no code executes after the park. Elsewhere the plan explicitly says dropping the sender releases `recv()` and lets the commit closure finish. Rename/fsync, guard-drop, or task failures can therefore occur during teardown while the retained put handle remains unawaited, producing a GREEN test despite a panic or error—the exact trap this sweep claims to eliminate.",
+      "file": "docs/bugfixes/reconcile-gc-dedup-race.md",
+      "line_start": 1272,
+      "line_end": 1275,
+      "confidence": 0.97,
+      "recommendation": "Keep each put handle, perform all permanent-stall witness assertions, then explicitly drop the park sender and await the handle under a timeout, unwrapping both `JoinError` and the inner put result. Apply this to T-P4a and both T-P4b variants without changing production hooks.",
+      "isPlanFinding": true
+    }
+  ],
+  "next_steps": [
+    "Revise only these test choreographies; keep the seven-hook production model unchanged.",
+    "Repeat the scoped plan review without re-running RED or GREEN tests."
+  ]
+}
