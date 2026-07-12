@@ -1,0 +1,34 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "plan",
+  "verdict": "needs-attention",
+  "summary": "Do not ship: T-P4b-1 is sound and the RED record matches `red.sha`, but T-P4b-2 can fail correct code before exercising the landed notification. Simpler alternative: add one explicit pre-rename arrival handshake while retaining the fix model. Open question: none.",
+  "planFile": "docs/bugfixes/reconcile-gc-dedup-race.md",
+  "planInDiff": true,
+  "reviewedFileCount": 1,
+  "target": "working tree diff",
+  "reviewedSha": "9ad2f68e2742aca073728016531be37b7e5fca5f",
+  "reviewedTree": "855042388ba338a6fe91709b412ab912d428a867",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 1,
+  "planFindingCount": 1,
+  "findings": [
+    {
+      "severity": "critical",
+      "title": "T-P4b-2 never proves the put reached `park_A`",
+      "body": "`park_A` is only described as a releasable wait; it has no arrival signal. Step 3 spawns the put and step 4 immediately spawns reconciliation. `tokio::spawn` does not synchronously poll the spawned task, so GC may grave X before the put has pinned it, capture an empty cohort, and reap immediately. The pending assertion then fails—or subsequent assertions fail—because of setup scheduling rather than removal of `notify_waiters()`. This also contradicts the plan's promise that both witnesses start reconciliation first. The witness is therefore potentially RED for the wrong reason and does not reliably seal P-5.",
+      "file": "docs/bugfixes/reconcile-gc-dedup-race.md",
+      "line_start": 1425,
+      "line_end": 1432,
+      "confidence": 0.99,
+      "recommendation": "Use the approved ordering: spawn reconciliation and await `pre_grave`; spawn the put and await an explicit `pre_rename_reached` signal emitted by `park_A`; release `pre_grave`, observe `post_grave` and the pending settlement probe, then release `park_A` into rename/notify while `park_B` keeps the pin live. This needs no new production hook or fix-model change.",
+      "isPlanFinding": true
+    }
+  ],
+  "next_steps": [
+    "Revise only T-P4b-2's choreography and align the summary, detailed steps, and Decision Log.",
+    "Repeat the scoped round-5 plan review without running machine-owned RED or GREEN tests."
+  ]
+}
