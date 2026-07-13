@@ -1,5 +1,5 @@
 use super::atomic;
-use super::pins::{Hooks, PassGuard};
+use super::pins::{Hooks, PassGuard, Settled};
 use super::Store;
 use crate::layout::{classify_objects_entry, grave_sha, Layout, ObjectsEntry};
 use crate::meta::ObjectMeta;
@@ -193,10 +193,28 @@ async fn run_once_at(
                 } else {
                     match pending.get(&name) {
                         Some(&first) if now_secs.saturating_sub(first) > grace_secs => {
-                            tokio::fs::remove_file(&p).await?;
-                            atomic::fsync_dir(&objects).await?;
-                            pending.remove(&name);
-                            stats.gc_deleted += 1;
+                            // 결정적 배리어(= 모델링된 **사전확인 지점**). `reconcile.rs`가
+                            // `BlobPins`에서 얻을 수 있는 것은 **훅뿐**이다(P4) — `live`/`landed`를
+                            // 읽을 방법이 아예 없다 → 여기서 보호 여부를 미리 판정하는 뮤턴트는
+                            // 이 모듈에서 **표현 불가**다.
+                            pass.pins().hooks().pre_grave(&name).await;
+                            // `settle()`은 `Graved`의 메서드이고 `Graved`는 `grave()`의 rename이
+                            // 성공해야만 태어난다 → 두 호출을 뒤바꾸는 뮤턴트는 **컴파일되지 않는다**.
+                            match pass.grave(&name).await?.settle().await? {
+                                Settled::Reaped => {
+                                    pending.remove(&name);
+                                    stats.gc_deleted += 1;
+                                }
+                                // D-2: tombstone **유지** · 무카운트. 다음 패스가 새 스냅샷으로 재판정한다.
+                                Settled::Restored => {
+                                    tracing::info!(sha = %name, "GC restored: landed commit");
+                                }
+                                // **degraded 경로**(P7 fail-CLOSED). 무덤은 이미 정본으로 복원됐다.
+                                // 에러 로그는 `settle()`이 이미 냈다(중복 로깅 금지).
+                                // ⚠ `?`로 패스를 중단하지 않는다 — 멈춘 핀 **하나**가 다른 blob들의
+                                //    GC를 막으면 안 된다. 루프는 **계속 돈다**.
+                                Settled::Deferred => {}
+                            }
                         }
                         Some(_) => {} // 아직 grace 내 — 보존
                         None => {
@@ -384,5 +402,98 @@ mod tests {
             "오래된 temp는 삭제"
         );
         assert_eq!(stats.temps_deleted, 1);
+    }
+
+    // ── `recover_graves`의 두 가드 (T-Q2 · T-Q3) ──────────────────────────────────────────
+    // 훅이 **필요 없는** 증인이므로 이 모듈에 산다(다리 불필요 — `run_once`를 직접 부른다).
+    // **park 0 · spawn 0 · 동시 put 0** — "확인 안 함"이 아니라 "확인했고 없음"이다.
+
+    /// 커밋 포인터를 손으로 심는다(put을 거치지 않는다 — put은 blob이 없으면 **바이트를 재기록**해
+    /// 복구를 가려 버린다). 이 테스트들의 관심사는 `recover_graves` **그 자체**다.
+    async fn write_pointer(root: &std::path::Path, bucket: &str, key: &str, sha: &str, size: u64) {
+        let meta = crate::meta::ObjectMeta {
+            content_type: "text/plain".into(),
+            size,
+            sha256: sha.to_owned(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            uploaded_by: "u".into(),
+        };
+        atomic::write_atomic(
+            &root.join(bucket).join(format!("{key}.meta.json")),
+            &serde_json::to_vec(&meta).unwrap(),
+        )
+        .await
+        .unwrap();
+    }
+
+    /// **T-Q2 — `recover_graves`의 내용 검증.** 정본이 **썩었고**(내용 sha ≠ 이름) 무덤에 **정상
+    /// 사본**이 있으면 **무덤이 정본을 덮어쓴다**.
+    ///
+    /// **뮤턴트**(`blob 존재 → remove_file(grave)` **무검증**) → 좋은 사본이 소멸하고 썩은 정본만
+    /// 남는다 → 블롭 루프가 그것을 **격리**한다(`quarantined == 1`) → `get_bytes` **404** → **RED**.
+    #[tokio::test]
+    async fn recover_graves_adopts_the_grave_when_the_canonical_blob_is_rotten() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().to_path_buf();
+        let s = Store::new(root.clone());
+        let good = b"tq2-good-copy".to_vec();
+        let sha = hex_sha(&good);
+
+        // 정본은 **썩었다**(이름 ≠ 내용 sha) · 무덤에는 **정상 사본** · 포인터는 그 sha를 참조한다
+        write_obj_file(&root, &sha, b"rotten bytes").await;
+        atomic::write_atomic(&s.layout().grave_path(&sha), &good)
+            .await
+            .unwrap();
+        write_pointer(&root, "b", "k", &sha, good.len() as u64).await;
+
+        let stats = run_once(&s, Duration::from_secs(3600), SETTLE).await.unwrap();
+        assert_eq!(
+            stats,
+            ReconcileStats {
+                referenced: 1,
+                gc_deleted: 0,
+                gc_pending: 0,
+                temps_deleted: 0,
+                quarantined: 0, // 무덤이 정본을 덮어썼다 → **격리할 것이 없다**
+            }
+        );
+        let (_, got) = s.get_bytes("b", "k").await.expect("좋은 사본이 살아남아야 한다");
+        assert_eq!(got, good);
+        assert!(!tokio::fs::try_exists(s.layout().grave_path(&sha)).await.unwrap());
+    }
+
+    /// **T-Q3 — `is_dir` 가드.** 무덤은 rename으로만 태어나므로 **디렉터리일 수 없다** —
+    /// `.gc-grave-<64hex>` 이름의 **디렉터리**를 심으면 `recover_graves`는 **건드리지 않는다**
+    /// (무검증 파괴 경로 제거). 정본이 디렉터리가 되지 않으므로 이후 put이 **500으로 영구화되지 않는다**.
+    #[tokio::test]
+    async fn recover_graves_skips_a_directory_that_is_named_like_a_grave() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().to_path_buf();
+        let s = Store::new(root.clone());
+        let content = b"tq3-payload".to_vec();
+        let sha = hex_sha(&content);
+        tokio::fs::create_dir_all(s.layout().grave_path(&sha)).await.unwrap();
+
+        let stats = run_once(&s, Duration::from_secs(3600), SETTLE).await.unwrap();
+        assert_eq!(
+            stats,
+            ReconcileStats::default(),
+            "무덤 **모양의 디렉터리**는 아무 것도 바꾸지 않는다"
+        );
+        assert!(
+            !tokio::fs::try_exists(s.blob_path(&sha)).await.unwrap(),
+            "정본이 **디렉터리가 되지 않았다**"
+        );
+        assert!(
+            tokio::fs::try_exists(s.layout().grave_path(&sha)).await.unwrap(),
+            "무덤 모양 디렉터리는 그대로 남는다(건드리지 않는다)"
+        );
+
+        // 이후 put이 정상 동작한다(영구 500 없음)
+        s.put("b", "k", "text/plain", "u", content.clone())
+            .await
+            .expect("put은 정상 동작한다");
+        let (_, got) = s.get_bytes("b", "k").await.unwrap();
+        assert_eq!(got, content);
     }
 }
