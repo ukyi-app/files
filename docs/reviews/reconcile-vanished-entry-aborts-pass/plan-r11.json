@@ -1,0 +1,45 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "plan",
+  "verdict": "needs-attention",
+  "summary": "Do not ship. The locked RED witnesses are sound, but the plan introduces an undeclared DT_UNKNOWN ordering change and its load-bearing production probe remains unrunnable. Simpler alternative: none that satisfies both locked witnesses; a temp-only fix would leave the blob path open. Open question: none.",
+  "planFile": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+  "planInDiff": true,
+  "reviewedFileCount": 1,
+  "target": "working tree diff",
+  "reviewedSha": "1e879cd85e6b78bccaac0ff2a9f1450abaea7bb4",
+  "reviewedTree": "ddf3be1439674dfaa4e10df9a5c1ce64dcb51d09",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 2,
+  "planFindingCount": 2,
+  "findings": [
+    {
+      "severity": "critical",
+      "title": "DT_UNKNOWN handling changes snapshot semantics",
+      "body": "The plan defers `DT_UNKNOWN` resolution until `Entry::is_dir()` processes each entry. Locked Tokio 1.52.3 instead calls `std::fs::DirEntry::file_type().ok()` while filling each read-dir chunk; std performs `fstatat` immediately for `DT_UNKNOWN` and Tokio caches successful results, retrying later only if that eager lookup failed. Deferral therefore observes a later filesystem state. For example, a 64-hex directory replaced by a file after the snapshot is skipped by the baseline’s cached type but processed—and potentially quarantined or collected—by the planned implementation. The reverse replacement can turn a baseline error into an `Ok` skip. This is a second observable behavior change, and W11’s all-graves hook assertion also assumes the missing eager cache.",
+      "file": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+      "line_start": 659,
+      "line_end": 665,
+      "confidence": 0.99,
+      "recommendation": "Mirror Tokio exactly in `read_all`: for `DT_UNKNOWN`, eagerly perform the no-follow `fstatat`, cache successful types, convert an initial failure to uncached state, and retry only in `is_dir()`. Add forced-DT_UNKNOWN witnesses covering type replacement and the initial-error retry.",
+      "isPlanFinding": true
+    },
+    {
+      "severity": "high",
+      "title": "The replacement M12 Job still cannot run",
+      "body": "The proposed Job mounts `files-bulk-ssd`, but the referenced homelab SSOT defines and mounts the production PVC as `files-data`, so this pod remains Pending. The `files` namespace also enforces Restricted Pod Security, while the `python:3-slim` pod lacks `runAsNonRoot`, a nonzero UID/GID, RuntimeDefault seccomp, `allowPrivilegeEscalation: false`, and capability dropping, so admission rejects it first. The purported inline probe remains a placeholder, and cleanup calls `shutil.rmtree` although the shown imports omit `shutil`. Consequently this load-bearing virtiofs gate still cannot produce G1–G6 evidence.",
+      "file": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+      "line_start": 1466,
+      "line_end": 1507,
+      "confidence": 1,
+      "recommendation": "Provide the complete homelab-owned Job using `claimName: files-data`, a digest-pinned probe image, Restricted-compliant pod/container security contexts matching the existing deployment, and a complete cleanup-safe script. Require manifest validation or server-side dry-run before treating M12 as executable.",
+      "isPlanFinding": true
+    }
+  ],
+  "next_steps": [
+    "Correct and characterize the DT_UNKNOWN snapshot-time behavior.",
+    "Replace the M12 pseudomanifest and verify it against the current homelab manifests and admission policy."
+  ]
+}
