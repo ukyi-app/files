@@ -266,6 +266,26 @@ impl PinGuard {
     /// 키 락이 호출자 퓨처에 남아 있으면: 취소가 락을 풀고 → 같은 키의 재시도·delete가 락을 얻어
     /// **먼저 끝나고** → 뒤늦게 깨어난 낡은 rename이 **더 새 포인터를 덮어쓰거나 삭제된 키를
     /// 되살린다**. 그래서 락은 **커밋으로 이전된다**(증인: T-S1).
+    ///
+    /// # ⚠ 재시작-필요 복구 계약 (S-2)
+    ///
+    /// 커밋 클로저는 `PinGuard`와 `KeyGuard`를 **함께 소유**하며 rename·fsync가 끝난 뒤에야 놓는다.
+    /// 시작된 `spawn_blocking`은 **취소할 수 없으므로**, **파일시스템 연산이 반환하지 않으면 그
+    /// `bucket/key`는 syscall이 반환하거나 프로세스가 재시작될 때까지 쓰기 불가**가 된다.
+    ///
+    /// **이것은 의도된 교환이다** — 가드를 먼저 놓으면 detach된 낡은 커밋이 더 새로운 포인터를
+    /// 덮어쓰거나 **성공적으로 삭제된 키를 되살린다**(무결성 손상). **가용성을 잃는 편이 낫다.**
+    ///
+    /// 근거(무엇을 사고 무엇을 파는가):
+    /// - 멈춘 fs는 **병리적 상황**이고, 그 경우 이 스토어는 **이미 사실상 죽은 상태**다
+    ///   — `reconcile`도 같은 fs를 읽는다(P7의 `settle_timeout`이 그 사실을 이미 모델링한다).
+    /// - 홈랩 **단일 replica + RWO PVC**라 blast radius가 **그 키 하나**다.
+    /// - **잠김(가용성) < 되살아나기(무결성)** — 삭제된 키가 부활하는 것은 **조용한 데이터 손상**이다.
+    ///
+    /// **침묵하지 않는다**: 같은 키의 대기자(PUT 재시도·타임아웃 없는 DELETE)는 `KeyLocks::lock`이
+    /// `LOCK_WARN_AFTER`를 넘기는 순간 `tracing::error!`를 낸다 — **행동은 불변**(계속 기다린다).
+    /// 증인: **T-S2**. 잠김 **없이** 되살아나기를 막는 설계(키-바인드 펜싱 / 버전화된 포인터 발행)는
+    /// 이번 범위 밖 — **F-30**.
     pub(crate) async fn commit_pointer(
         self,
         key: KeyGuard,
@@ -786,6 +806,215 @@ mod tests {
         assert!(
             !tokio::fs::try_exists(&meta).await.unwrap(),
             "B(delete)가 **이긴다** — 낡은 커밋이 삭제된 키를 되살리면 안 된다"
+        );
+        drop(d);
+    }
+
+    // ── T-S2 전용: tracing 캡처 (테스트 전용 · **새 의존성 0**) ───────────────────────────────
+    // 저장소에 기존 캡처 관행은 **없다**(`tracing_subscriber`는 `main.rs`의 prod 초기화 전용).
+    // 그래서 `tracing`(이미 dep)의 `Subscriber`를 **직접** 구현한다 — layer 스택·registry 불필요.
+    // **스레드-로컬** default(`set_default`)라 다른 테스트로 새지 않는다. `#[tokio::test]`의 기본
+    // current_thread 런타임은 `tokio::spawn`한 태스크도 **같은 스레드**에서 폴링하므로,
+    // delete 태스크가 `KeyLocks::lock` 안에서 내는 이벤트까지 이 구독자가 잡는다.
+
+    struct CaptureSubscriber(Arc<Mutex<Vec<String>>>);
+
+    struct FieldVisitor(String);
+    impl tracing::field::Visit for FieldVisitor {
+        fn record_str(&mut self, f: &tracing::field::Field, v: &str) {
+            self.0.push_str(&format!(" {}={}", f.name(), v));
+        }
+        fn record_debug(&mut self, f: &tracing::field::Field, v: &dyn std::fmt::Debug) {
+            self.0.push_str(&format!(" {}={:?}", f.name(), v));
+        }
+    }
+
+    impl tracing::Subscriber for CaptureSubscriber {
+        fn enabled(&self, _m: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _a: &tracing::span::Attributes<'_>) -> tracing::Id {
+            tracing::Id::from_u64(1)
+        }
+        fn record(&self, _i: &tracing::Id, _v: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _i: &tracing::Id, _f: &tracing::Id) {}
+        fn event(&self, e: &tracing::Event<'_>) {
+            if *e.metadata().level() != tracing::Level::ERROR {
+                return;
+            }
+            let mut v = FieldVisitor(String::new());
+            e.record(&mut v);
+            self.0.lock().unwrap().push(v.0);
+        }
+        fn enter(&self, _i: &tracing::Id) {}
+        fn exit(&self, _i: &tracing::Id) {}
+    }
+
+    /// `needle`을 담은 ERROR 이벤트가 나타날 때까지 유계 폴링. 예산이 끊기면 **실패**한다
+    /// → 경고를 지우는 뮤턴트가 여기서 RED가 된다("잠긴 키가 침묵한다").
+    async fn wait_for_error_log(
+        logs: &Arc<Mutex<Vec<String>>>,
+        needle: &str,
+        budget: Duration,
+    ) -> Vec<String> {
+        let deadline = tokio::time::Instant::now() + budget;
+        loop {
+            let hits: Vec<String> = logs
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|l| l.contains(needle))
+                .cloned()
+                .collect();
+            if !hits.is_empty() {
+                return hits;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "예산 안에 `{needle}` ERROR가 발화하지 않았다 — 잠긴 키가 **침묵한다**(관측성 부재)"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// **T-S2 — 재시작-필요 복구 계약**(S-2 인간 판정: 잠김 < 되살아나기).
+    ///
+    /// 이 테스트는 **선택한 유계 행동을 증명**한다 — 버그가 아니라 **교환**임을 못박는다:
+    /// 멈춘 fs 위의 무취소 커밋은 그 `bucket/key`를 **쓰기 불가**로 만들고(가용성 손실),
+    /// **그 사실을 시끄럽게 로그하며**(관측성), 커밋이 끝나면 **삭제가 이긴다**(무결성 보존).
+    ///
+    /// 안무(랑데부):
+    ///  ① A(put)를 spawn → `in_commit_pre_rename`에서 **park**(무취소 클로저가 **핀 + 키 락** 보유)
+    ///     → **도착 신호**를 await.
+    ///  ② A의 바깥 퓨처를 **abort** → `JoinError::is_cancelled()`로 **취소 완료를 await**.
+    ///     ※ blocking 클로저는 **죽지 않았다** — 지금이 "fs가 반환하지 않는" 상황의 결정적 모형이다.
+    ///  ③ 같은 키의 **delete**(타임아웃 **없음** — `objects.rs`)를 spawn → `timeout(200ms)`가
+    ///     **pending**임을 관측 = **그 키는 쓰기 불가다**.
+    ///  ④ 경고 임계(`with_hooks_and_lock_warn`으로 100ms 주입)를 넘겨 `tracing::error!`가
+    ///     **실제로 발화**함을 캡처해 단언 — 잠긴 `bucket`·`key`를 지목하는지까지.
+    ///  ⑤ **행동 불변**: 경고 후에도 B는 **여전히 대기**한다(에러 반환 0 · 상계 0).
+    ///  ⑥ park 해제 → A 완주.
+    ///  ⑦ **그제서야** B가 진행되어 **이긴다**: 순서 = [A:landed, B:deleted] ∧ 포인터 **부재**.
+    ///
+    /// 뮤턴트:
+    ///  - **경고 제거**(로그 한 줄 삭제) → ④의 `wait_for_error_log`가 예산을 소진 → **RED**(관측성 부재).
+    ///  - **가드를 타임아웃으로 놓기**(= S-1 부활: 키 가드를 커밋 클로저로 옮기지 않음) → ②의 취소가
+    ///    락을 풀어버려 ③의 `timeout`이 **완료**(B가 먼저 끝난다) → **RED**. 그리고 뒤늦게 깨어난 A의
+    ///    rename이 **삭제된 키를 되살려** ⑦의 부재 단언도 **RED**. ⇒ 잠김을 없애면 **되살아난다**.
+    #[tokio::test]
+    async fn wedged_commit_keeps_key_unwritable_and_says_so_loudly() {
+        /// 프로덕션의 `LOCK_WARN_AFTER`(30s)를 기다릴 수 없으므로 짧게 **주입**한다.
+        /// 프로덕션 경로는 불변 — `Store::new`는 여전히 `KeyLocks::new()`를 쓴다.
+        const WARN: Duration = Duration::from_millis(100);
+
+        let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let _sub = tracing::subscriber::set_default(CaptureSubscriber(logs.clone()));
+
+        let (arrived_tx, mut arrived_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let release_rx = Mutex::new(release_rx);
+        let seq: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+        let seq_hook = seq.clone();
+
+        let hooks = Hooks {
+            // 커밋 클로저 **안**, rename **직전** — 두 가드 모두 클로저의 것이다.
+            // 이 park이 "반환하지 않는 파일시스템 연산"의 결정적 대역이다.
+            in_commit_pre_rename: Some(Arc::new(move |_sha: &str| {
+                arrived_tx.send(()).expect("도착 신호");
+                release_rx.lock().unwrap().recv().expect("park 해제 신호");
+            })),
+            in_commit_post_landed: Some(Arc::new(move |_sha: &str| {
+                seq_hook.lock().unwrap().push("A:landed");
+            })),
+            ..Hooks::default()
+        };
+
+        let d = tempfile::tempdir().unwrap();
+        let s = Store::with_hooks_and_lock_warn(d.path().to_path_buf(), hooks, WARN);
+        let meta = s.meta_for("wedged", "stalled-key").unwrap();
+
+        // ① A: put — 커밋 직전에서 park.
+        let a = tokio::spawn({
+            let s = s.clone();
+            async move {
+                s.put("wedged", "stalled-key", "text/plain", "u", b"A".to_vec())
+                    .await
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(5), arrived_rx.recv())
+            .await
+            .expect("A는 커밋 클로저(rename 직전)에 도달해야 한다")
+            .expect("도착 신호 채널");
+
+        // ② abort → **취소 완료까지 await**(abort ≠ 취소 완료).
+        a.abort();
+        let joined = tokio::time::timeout(Duration::from_secs(5), a)
+            .await
+            .expect("취소는 완료되어야 한다(블로킹 클로저를 기다리지 않는다)");
+        assert!(
+            joined.expect_err("A의 퓨처는 취소된다").is_cancelled(),
+            "abort → JoinError::is_cancelled (퓨처는 죽었다 — 그러나 클로저는 살아 있다)"
+        );
+
+        // ③ B: 같은 키의 delete(**타임아웃 없음**) → 쓰기 불가.
+        let mut b = tokio::spawn({
+            let (s, seq) = (s.clone(), seq.clone());
+            async move {
+                let r = s.delete("wedged", "stalled-key").await;
+                seq.lock().unwrap().push("B:deleted");
+                r
+            }
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), &mut b)
+                .await
+                .is_err(),
+            "무취소 커밋이 키 락을 쥐고 있다 → 그 키는 **쓰기 불가**다(계약의 대가)"
+        );
+
+        // ④ **관측성** — 그 상황은 침묵하지 않는다.
+        let warned = wait_for_error_log(
+            &logs,
+            "key lock held beyond threshold",
+            Duration::from_secs(5),
+        )
+        .await;
+        assert!(
+            warned
+                .iter()
+                .any(|l| l.contains("bucket=wedged") && l.contains("key=stalled-key")),
+            "경고는 **어느 키가** 잠겼는지 지목해야 한다 — 잡힌 ERROR: {warned:?}"
+        );
+
+        // ⑤ **행동 불변**: 로그는 로그일 뿐이다. B는 여전히 무한정 기다린다.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), &mut b)
+                .await
+                .is_err(),
+            "경고 후에도 B는 **계속 기다린다** — 에러를 반환하지도, 상계를 갖지도 않는다"
+        );
+        assert!(
+            seq.lock().unwrap().is_empty(),
+            "아직 아무도 완주하지 않았다(경고가 B를 풀어주면 안 된다)"
+        );
+
+        // ⑥ park 해제 → A의 클로저가 rename·fsync·핀drop·키락drop을 완주.
+        release_tx.send(()).expect("park 해제");
+
+        // ⑦ 그제서야 B가 진행되어 **이긴다**. 핸들을 보유했다가 await + 두 겹 unwrap.
+        tokio::time::timeout(Duration::from_secs(5), b)
+            .await
+            .expect("B는 커밋이 끝나면 진행된다")
+            .expect("B 태스크는 패닉/취소되지 않는다")
+            .expect("delete는 성공한다");
+        assert_eq!(
+            *seq.lock().unwrap(),
+            vec!["A:landed", "B:deleted"],
+            "무취소 커밋이 먼저 완주하고, 그 다음에야 같은 키의 delete가 실행된다"
+        );
+        assert!(
+            !tokio::fs::try_exists(&meta).await.unwrap(),
+            "delete가 **이긴다** — 가드를 타임아웃으로 놓았다면 여기서 낡은 커밋이 삭제된 키를 되살린다"
         );
         drop(d);
     }

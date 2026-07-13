@@ -47,6 +47,22 @@ impl Store {
         }
     }
 
+    /// 배리어 **+ 키 락 경고 임계값**을 주입한 `Store`(테스트 전용).
+    /// `LOCK_WARN_AFTER`(prod 30s)를 그대로 두면 T-S2가 30초를 기다려야 한다 → 관측 가능하게 줄인다.
+    /// **프로덕션 경로에는 영향이 없다** — `Store::new`는 여전히 `KeyLocks::new()`를 쓴다.
+    #[cfg(test)]
+    pub(crate) fn with_hooks_and_lock_warn(
+        root: PathBuf,
+        hooks: pins::Hooks,
+        warn_after: std::time::Duration,
+    ) -> Self {
+        Self {
+            layout: Layout::new(root),
+            locks: locks::KeyLocks::with_warn_after(warn_after),
+            pins: pins::BlobPins::with_hooks(hooks),
+        }
+    }
+
     pub fn blob_path(&self, sha: &str) -> PathBuf {
         self.layout.blob_path(sha)
     }

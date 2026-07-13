@@ -1083,6 +1083,64 @@ blocking 클로저, rename과 마킹 사이에 `await`가 없다). **알 수 없
 | **골든 트리 잔재 0 — 구조적 사실** | ① 무덤은 `.objects` **직속 평면 파일**이다 — **`mkdir`이 코드에 없다** → 빈 디렉터리 잔재가 **불가능**하다(`rel_files`가 디렉터리를 수집하지 않는다는 `layout_tree.rs:20-36`의 **허점에 기대지 않는다**). ② 골든 스크립트의 reconcile은 `gc_deleted:0, gc_pending:1` — **첫 관측 → `pending.insert`**이므로 `grave()`에 **진입조차 하지 않는다**. ③ 정상 완료 패스는 무덤을 남길 수 없다(`grave()`의 결과는 같은 표현식에서 `settle()`에 소비되고 `?` 외 탈출 경로가 없다) → `expected` 리스트 **바이트 동일** |
 | **`RESERVED_SUFFIXES` / `valid_key`** | 불변. `segment_ok`(`layout.rs:19`)가 `.` 시작 세그먼트를 금지 → 사용자 키와 무덤 이름 **충돌 불가**. `pointers_all`은 `.objects` 스킵(`layout.rs:262`), `is_commit_pointer_name`은 `.meta.json` 요구 |
 | **`write_atomic` 공개 시그니처** | **불변**(`pub async fn write_atomic(&Path, &[u8]) -> io::Result<()>`). 내부만 단일 blocking 클로저로 위임 — **syscall 시퀀스 축자 동일**, 취소 입도만 "부분 → 전무"로 **좁아진다**(부분 상태의 순감소) |
+| **같은 키의 쓰기 직렬화 (B8)** | `KeyLocks`·`lock_key`·가드 획득 지점 **무변경**. 바뀐 것은 **가드의 수명**뿐이다 — 커밋 클로저로 **이전**된다(S-1 수리). ⚠ **그 수리가 새 degraded-path 행동을 낳는다**: **멈춘 fs에서 그 `bucket/key`는 프로세스 재시작까지 쓰기 불가**다. **오늘 없던 상태**이므로 아래 §재시작-필요 복구 계약에 **정직하게** 편다 — 릴리스 게이트 제출물 |
+| **`KeyLocks::lock`의 대기 의미론** | **무한정 대기·에러 반환 없음 — 불변.** B-1이 더한 것은 `LOCK_WARN_AFTER`(30s) 초과 시의 **`tracing::error!` 한 줄**뿐이다. 대기 퓨처를 **드롭하지 않고** 계속 await하므로 tokio Mutex의 **FIFO 대기열 위치도 보존**된다 → 공정성 포함 **행동 delta 0**. 반환 타입에 실패가 없다(`KeyGuard`, `Result` 아님) → *"타임아웃으로 가드를 포기한다"*가 **표현 불가**하다(S-1 부활 차단). 증인: **T-S2** ⑤ |
+
+### ⚠ 재시작-필요 복구 계약 (S-2 — **새 degraded-path 행동**, 릴리스 게이트 제출물)
+
+> **무엇이 바뀌는가.** 커밋 클로저는 `PinGuard`와 `KeyGuard`를 **함께 소유**하며 rename·fsync가 끝난 뒤에야
+> 놓는다. **시작된 `spawn_blocking`은 취소할 수 없다.** 따라서 계획서가 **스스로 모델링한** "반환하지 않는
+> 파일시스템 연산"(P7의 존재 이유) 하에서는, `upload_timeout`이 호출자 퓨처를 드롭해도 detach된 클로저가
+> 그 키를 **syscall이 반환하거나 프로세스가 재시작될 때까지** 붙들고 있다 →
+> **그 `bucket/key`는 재시작까지 쓰기 불가**다. 같은 키의 DELETE는 **타임아웃이 없고**(`objects.rs`의
+> `delete`), PUT 재시도는 **대기 전에 전역 capacity를 예약**하므로(`http/internal/files.rs`) 그 키로
+> 재시도가 쌓이면 **전역 capacity를 갉아** 장애가 번질 수 있다.
+>
+> **이것은 의도된 교환이다.** 가드를 타임아웃으로 놓는 것은 **금지**다 — S-1이 되살아난다.
+
+**왜 두 번째 관측 행동 플립이 아닌가 (정직한 논증)**
+
+1. **오늘, 같은 입력에서 무슨 일이 일어나는가.** 오늘의 커밋도 `tokio::fs::rename` = `spawn_blocking`이다
+   (§크래시 렌즈가 이미 코드로 증명). 오늘 그 rename이 반환하지 않으면 — 키 가드가 **호출자 퓨처**에 있으므로
+   `upload_timeout`이 그것을 **풀어버린다** → 같은 키의 DELETE가 진행돼 **성공**하고 → 뒤늦게 깨어난 낡은
+   rename이 **삭제된 키를 되살린다**. 즉 **오늘의 행동은 "쓰기 가능 + 조용한 되살아나기"**이고, 새 행동은
+   **"쓰기 불가 + 되살아나기 없음"**이다. **정상 → 비정상의 플립이 아니라, 병리적 입력 하에서 두 실패 모드 중
+   무엇을 택하느냐**다. 그리고 그 선택은 **잠김(가용성) < 되살아나기(무결성)** — 삭제된 키의 부활은 **조용한
+   데이터 손상**이고, 잠김은 시끄러운 가용성 손실이다.
+2. **그 입력에서는 오늘도 스토어가 사실상 죽어 있다.** reconcile도 **같은 fs**를 읽는다
+   (`recover_graves`·`collect_referenced`). 멈춘 fs는 이 스토어의 **전역 장애**이지 이 키의 국소 장애가 아니다.
+   `settle_timeout`(P7)이 애초에 존재하는 이유가 바로 그 상황의 모델링이다 — **계획서가 스스로 인정한 전제**다.
+3. **blast radius.** 홈랩 **단일 replica + RWO PVC**라 잠기는 것은 **그 키 하나**다(락은 `bucket/key` 단위 —
+   `lock_key`). 다른 키의 PUT/DELETE는 영향받지 않는다.
+4. **관측 계약의 표면.** 이 픽스가 세는 플립은 characterization·regression이 **실제로 구동하는** 관측 표면의
+   행동이다. "반환하지 않는 syscall"은 **프로덕션 fs에서 어떤 테스트도 구동할 수 없는 입력**이며(T-S2는 훅으로
+   그 대역을 **모형화**할 뿐이다), 그 입력에서 오늘의 결과는 "정의된 행동"이 아니라 **조용한 손상**이다.
+
+**⚠ 그럼에도 정직하게 — 반론을 숨기지 않는다.** 이것은 **오늘 없던 상태**다("그 키가 재시작까지 쓰기 불가").
+"관측 불가한 입력"이라는 4번 논거는 **약하다** — 멈춘 NFS·풀린 PVC는 홈랩에서 실재하는 입력이다.
+릴리스 게이트가 이것을 **숨겨진 두 번째 플립**으로 판정하면 **Blocker로 받아들인다.** 우리는 숨기지 않는다 —
+계약은 **네 곳**에 박혀 있다: `PinGuard::commit_pointer` doc · `KeyGuard` doc · **T-S2**(기계 증인) ·
+`KeyLocks::lock`의 **`tracing::error!`**(운영자가 그 상황을 **본다**).
+
+**관측성 — 그 상황은 침묵하지 않는다.** `KeyLocks::lock`은 획득이 `LOCK_WARN_AFTER`(**30s**)를 넘기면
+**한 번** `error!`를 내고 **계속 기다린다**(행동 delta 0 · `ReconcileStats` 필드 0개 추가):
+
+```text
+key lock held beyond threshold — an uncancellable commit may be wedged on a stalled filesystem;
+this key stays unwritable until the syscall returns or the process restarts (deliberate:
+releasing the guard would let a detached commit resurrect a deleted key)
+    bucket=<b> key=<k> waited_ms=30000
+```
+
+첫 절은 **사실**("락이 임계를 넘겨 잡혀 있다")이고 해석절은 **유보**("**may** be wedged")다 — 알려진 오탐
+클래스(`put_stream`이 스트리밍 본문 내내 락을 쥐므로 같은 키의 동시 writer가 `upload_timeout`(600s)까지
+**정당하게** 대기할 수 있다)에서도 **거짓말하지 않는다**.
+
+**→ F-30 (후속 파이프라인)**: **키-바인드 펜싱 / 버전화된 포인터 발행으로 잠김 **없이** 되살아나기를 막는다.**
+커밋이 자기 키의 **펜스 토큰**(또는 포인터 세대 번호)을 들고 rename하고, 발행 시점보다 낡은 토큰의 rename은
+**커밋 자체가 거부**한다 → 가드를 일찍 놓아도 낡은 커밋이 이길 수 없다 ⇒ **잠김 0 · 되살아나기 0**.
+Codex의 첫 번째 권고이며 **설계가 커져서**(원자적 세대 발행 + 크래시 복구 시 세대 재구성 + 무덤/복구 경로와의
+상호작용) 이번 범위에서 뺐다. 그때까지의 계약이 위의 **재시작-필요 복구**다.
 
 ### ⚠ 이 픽스는 부분 해결이다 (D-4)
 
@@ -1117,6 +1175,9 @@ blocking 클로저, rename과 마킹 사이에 `await`가 없다). **알 수 없
    HTTP 응답은 불변(`400 upload_timeout`).
 3. **`write_atomic` 전체가 무취소가 되며** 다른 호출부(`delete`의 fsync, gc-pending 쓰기)의 부분 상태가
    사라진다. 순개선.
+
+> ⚠ **네 번째 부수 변화는 이 목록에 넣지 않는다** — **재시작-필요 복구 계약**(S-2)은 "테스트 없음"이 아니다.
+> **T-S2가 기계 증인**이고 `tracing::error!`가 운영 증인이다. §재시작-필요 복구 계약 참조.
 
 ## Regression test (already RED at red.sha)
 
