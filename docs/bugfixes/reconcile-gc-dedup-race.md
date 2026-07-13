@@ -3,7 +3,7 @@ bugfix: reconcile-gc-dedup-race
 invariant-class: bugfix
 entry-track: bug
 review-track: full
-pipeline-stage: release-gate
+pipeline-stage: finishing
 issue-tracker: local
 symptom: "reconcile가 참조 스냅샷을 뜬 뒤 동시 put이 dedup 경로로 그 블롭을 커밋하면, GC가 살아있는 블롭을 삭제한다 — 커밋 포인터는 남고 블롭만 사라져 객체가 영구 non-servable이 된다(GET 404 / list 제외). 데이터 손실."
 red-baseline: 65458082b6692acd0345763da96ef9a811ae745e
@@ -2755,3 +2755,14 @@ seven hook fields private in production.**"*
 **⚠ 이 개정이 하지 *않은* 것(경계)**: 프로덕션 가시성 확대 **0** · `Hooks` 필드 변경 **0** · `settle()`·코호트·
 `landed`·무덤 이름공간·복구 경로의 의미 변경 **0** · 관측 행동 플립 수 변화 **0** · `bugfix-lock.json` `scope[]`
 변경 **0**. **상시 승인(standing approval)의 경계 안**이다 — S-3은 **테스트 seam**이지 fix model이 아니다.
+
+### Codex Release Review — r1 (needs-attention · 4 findings) → r2 (3 해소) → r3: **clean — verdict approve, 0 findings**
+
+| ID | Finding | Severity | Decision | Action |
+|----|---------|----------|----------|--------|
+| R-1 | RED verify-record가 `symptomTokenPresent: true`라면서 그 `outputTail`에는 `DATA LOSS`도 테스트 ID도 없다(컴파일 노이즈뿐) — **감사 추적이 자기 판정을 뒷받침하지 못한다** | critical | **Accept** | 근본 원인은 **스크립트**였다: 실패 시 `out = stdout + stderr`로 stderr를 뒤에 붙여 tail이 빌드 로그로만 채워졌다(토큰 검사는 전체 출력에 대해 하므로 판정 자체는 옳았다). `gated-bugfix/scripts/bugfix-status.mjs` 수정 — ① stderr를 앞, 하네스 stdout을 뒤로 ② regression tail의 창을 symptomToken에 앵커링. selftest 통과, 레코드 **재생성**(손으로 고치지 않음) |
+| R-2 | 일반 `write_atomic`이 stage·rename·fsync를 **하나의 무취소 클로저**에 넣어, **잠긴 플립과 무관한 호출부**(`.bucket.json`·`.gc-pending.json`)의 취소 의미론까지 바꿨다 — **두 번째 관측 행동 플립** | high | **Accept** | `write_atomic`을 baseline async 체인으로 **축자 복원**(red.sha와 바이트 동일 확인). 무취소 stage/commit은 **`PinGuard::commit_pointer` 전용**으로 제한. 원자적 쓰기가 두 벌이 되지만 **정확성 > DRY** — 같은 온디스크 시퀀스임을 doc 표로 못박고 취소 의미론이 서로 반대인 이유를 명시. T-R2a 추가(blocking 스레드 1개 런타임을 점거해 구조적 Pending을 만든 뒤 취소 → 타깃 부재 단언, 타이밍 비의존). 뮤턴트 RED 실증 |
+| R-3 | verification.md가 명령 출력 대신 요약을 넣었고, 스크립트 hint를 옮겨 *"repro gone"*을 주장했으나 레코드의 `repro`는 `null`이다 | high | **Accept**(r2에서 재지적 — 20회 블록이 재구성물이었다) | 원문 출력으로 교체 + `repro` 주장 철회. 20회 반복은 **파이프라인이 캡처한 무삭제 원문**을 별도 아티팩트(`evidence-regression-20x.txt`, 250줄, 자체 집계 `exit 0: 20 / non-zero: 0`)로 커밋 |
+| R-4 | lock의 `scope[]`가 `CONTEXT.md`·`docs/adr/**`를 선언하지 않아 배리어 B4의 scope 증명이 **거짓**이었다(B-3 acceptance가 그 갱신을 **요구**했는데도) | high | **Accept** | scope에 명시 추가. 그 둘은 테스트도 slug-키 북키핑도 아니므로 면제되지 않는다 — 선언이 정답 |
+
+**r3 판정**: *"R-3 is resolved. The artifact contains 20 complete ordered runs of the locked command, each with the expected test PASS and EXIT 0, matching its 20/20 tally. … No material new issue was introduced."* — **approve, 0 findings.**
