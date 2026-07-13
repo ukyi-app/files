@@ -1,0 +1,46 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "plan",
+  "verdict": "needs-attention",
+  "summary": "No-ship. The RED record matches its locked tree and exercises the real `run_once` seam, but two preservation premises fail. Simpler alternative: validate a single-fd directory-guard design directly on the deployed PVC before adding the broader witness machinery. Open question: does the live virtiofs mount guarantee that an open directory fd prevents inode reuse?",
+  "planFile": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+  "planInDiff": true,
+  "reviewedFileCount": 1,
+  "target": "working tree diff",
+  "reviewedSha": "27c7c9bd849d53f0c8328b3b6aabd490c81e4ffd",
+  "reviewedTree": "828eaa73dab066a23e28eb9cb060327c5b6664e1",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 2,
+  "planFindingCount": 2,
+  "findings": [
+    {
+      "severity": "critical",
+      "title": "B-7 is a current deployment risk, not a hypothetical migration residual",
+      "body": "The plan assumes the homelab PVC is ext4 while admitting that failure to pin server-side identity silently restores P-12. However, `docs/plans/2026-06-30-files-design.md:139` documents `/data` as backed by the `bulk-ssd` virtiofs bind. Virtiofs is absent from the ext4/tmpfs/overlayfs/APFS measurements. Therefore the load-bearing identity proof is unvalidated on the documented production filesystem; if its open handle does not prevent inode reuse, a replacement `.objects` can forge `(dev, ino)`, mint `Absent`, and permit `Ok` plus pending-ledger publication.",
+      "file": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+      "line_start": 1015,
+      "line_end": 1015,
+      "confidence": 0.98,
+      "recommendation": "Repeat the pin/no-pin ABA and inode-reuse measurements on the mounted production PVC and make the result an acceptance/deployment gate. If virtiofs lacks the required guarantee, replace this proof with an identity mechanism explicitly supported and tested there.",
+      "isPlanFinding": true
+    },
+    {
+      "severity": "high",
+      "title": "The guard creates a new EMFILE pass-abort path",
+      "body": "`capture_dir` retains one directory fd and then `tokio::fs::read_dir` opens another. The RED implementation needs only the latter. With exactly one descriptor available below `RLIMIT_NOFILE`, the old pass can snapshot successfully, while the proposed implementation consumes that descriptor for `DirGuard` and aborts at `read_dir` with `EMFILE`. This contradicts the plan's “new failure class 0” claim and introduces a second observable failure that can again stall GC under descriptor pressure.",
+      "file": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+      "line_start": 342,
+      "line_end": 345,
+      "confidence": 0.99,
+      "recommendation": "Use one opened directory handle for both enumeration and identity pinning, or specify a conservative EMFILE fallback that drops the guard and retries using legacy fail-closed behavior. Add an isolated low-`RLIMIT_NOFILE` subprocess witness.",
+      "isPlanFinding": true
+    }
+  ],
+  "next_steps": [
+    "Validate directory-handle pinning on the documented virtiofs-backed production volume.",
+    "Revise the snapshot design so it does not require an additional simultaneous descriptor.",
+    "Update the plan and rerun the adversarial plan gate."
+  ]
+}
