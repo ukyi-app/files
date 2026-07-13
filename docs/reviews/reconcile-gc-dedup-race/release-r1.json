@@ -1,0 +1,69 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "release",
+  "verdict": "needs-attention",
+  "summary": "Do not ship: the RED proof is internally inconsistent, required verification is narrative-only, the branch contains an undeclared cancellation flip, and the scope proof omits non-exempt files.",
+  "planFile": "docs/bugfixes/reconcile-gc-dedup-race.md",
+  "planInDiff": null,
+  "reviewedFileCount": 25,
+  "target": "branch diff against main",
+  "reviewedSha": "e76bb50e38861aba2a78ab86e72b204c1907a84f",
+  "reviewedTree": "c0102e0dc62f322bbbe293dae53866ef1778af4e",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 4,
+  "planFindingCount": 0,
+  "findings": [
+    {
+      "severity": "critical",
+      "title": "Inconsistent verify-record",
+      "body": "The record claims `symptomTokenPresent: true`, but its bounded `outputTail` contains neither `DATA LOSS` nor the locked test ID—only compilation output and a generic `test failed` message. This cannot prove RED-for-the-right-reason and violates the verify-record integrity rule.",
+      "file": "docs/reviews/reconcile-gc-dedup-race/bugfix-verify-red-cc8704f924f23116fd61a89d6a2f49348fa2ef7d.json",
+      "line_start": 7,
+      "line_end": 10,
+      "confidence": 1,
+      "recommendation": "Fix the script’s tail capture and rerun its locked RED/GREEN verification so the committed RED tail contains the failing test ID and symptom token. Do not hand-edit the record.",
+      "isPlanFinding": false
+    },
+    {
+      "severity": "high",
+      "title": "Generic atomic writes introduce a second cancellation flip",
+      "body": "`write_atomic` now stages, renames, and fsyncs inside one non-abortable `spawn_blocking` closure. Previously, cancellation between async steps prevented later steps from being polled; now dropping the caller lets the entire operation continue. This affects unrelated callers including bucket metadata and `.gc-pending.json`, allowing state publication after cancellation and potentially a detached stale pending write racing a later pass. The plan explicitly admits the whole helper became uncancellable without tests, so this is observable behavior beyond the locked GC/dedup flip.",
+      "file": "src/store/atomic.rs",
+      "line_start": 5,
+      "line_end": 18,
+      "confidence": 0.97,
+      "recommendation": "Preserve the baseline cancellation semantics of generic `write_atomic`; restrict the uncancellable stage/commit path to the pin-bound pointer commit. Otherwise route the broader behavior change through the feature pipeline.",
+      "isPlanFinding": false
+    },
+    {
+      "severity": "high",
+      "title": "Missing verification: raw final and original-repro evidence is absent",
+      "body": "The verification artifact substitutes a four-line digest and a narrative `20/20 GREEN` claim for actual command output. It also claims `repro gone`, while both verify-records contain `repro: null`. Consequently, the final regression repetition, full characterization run, and original un-minimised repro cannot be audited from committed evidence.",
+      "file": "docs/reviews/reconcile-gc-dedup-race/verification.md",
+      "line_start": 28,
+      "line_end": 48,
+      "confidence": 1,
+      "recommendation": "Commit actual output for the exact locked regression and characterization commands and for the original un-minimised repro at green, including the repeated concurrency runs, then update verification.md from those artifacts.",
+      "isPlanFinding": false
+    },
+    {
+      "severity": "high",
+      "title": "Branch-wide scope proof omits non-exempt documentation",
+      "body": "The lock permits only `src/store/**`, `src/main.rs`, and `src/layout.rs`, but `red-baseline..HEAD` also changes `CONTEXT.md` and adds ADR 0002. Those files are neither tests nor slug-keyed pipeline bookkeeping, so the committed `blockers 0` scope claim is false under the release rule.",
+      "file": "docs/reviews/reconcile-gc-dedup-race/bugfix-lock.json",
+      "line_start": 10,
+      "line_end": 13,
+      "confidence": 1,
+      "recommendation": "Add the authorized documentation paths to `scope[]` with Decision Log approval, or move them into an exempt slug-keyed area, then regenerate the scope verification.",
+      "isPlanFinding": false
+    }
+  ],
+  "next_steps": [
+    "Recapture internally consistent script-owned RED/GREEN records.",
+    "Remove or separately authorize the generic cancellation behavior change.",
+    "Commit raw final regression, characterization, repeated-race, and original-repro evidence.",
+    "Correct the branch-wide scope declaration and verification."
+  ]
+}
