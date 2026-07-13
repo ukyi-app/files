@@ -1,0 +1,33 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "plan",
+  "verdict": "needs-attention",
+  "summary": "No-ship: the locked RED witness is valid, but P-4 remains acceptance-bypassable. Simpler alternative: mechanically pin the production wrapper’s exact delegation instead of adding another hook.",
+  "planFile": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+  "planInDiff": true,
+  "reviewedFileCount": 1,
+  "target": "working tree diff",
+  "reviewedSha": "fa5979b50b9923465baf8946efaa237eb6e32aed",
+  "reviewedTree": "ace0ff71e3f1a1b302e77eae3750fa1e318e15b8",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 1,
+  "planFindingCount": 1,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "W11 can pass while production recovery remains broken",
+      "body": "W11 calls `recover_graves_from` directly, while W8 scans only `reconcile.rs`. The correct helper can therefore exist solely to satisfy W11 while production `recover_graves` delegates to an old-style raw loop moved into `reconcile/entry.rs`. W8 sees no prohibited strings, W11 and normal recovery characterizations pass, yet `PassGuard::begin` still aborts when a snapshotted grave disappears. The claimed closure of P-4/M14 is therefore not enforced at the real production entrypoint.",
+      "file": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+      "line_start": 555,
+      "line_end": 556,
+      "confidence": 0.96,
+      "recommendation": "Add a source/AST invariant pinning `recover_graves` to exactly snapshot then call `recover_graves_from`, with exactly one production helper call. Also mutation-check the dead-helper/raw-production variant or run W11 through a deterministic seam on the actual production entrypoint.",
+      "isPlanFinding": true
+    }
+  ],
+  "next_steps": [
+    "Strengthen P-4 acceptance to bind W11’s tested helper to the production `PassGuard::begin` path, then repeat the scoped review."
+  ]
+}
