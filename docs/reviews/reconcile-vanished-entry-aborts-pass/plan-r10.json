@@ -1,0 +1,57 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "plan",
+  "verdict": "needs-attention",
+  "summary": "No-ship. The RED record matches its locked SHA/tree, but it fails on synthetic blob deletion rather than the exact concurrent-temp symptom; two additional plan assumptions introduce a second flip and an unusable deployment gate. Simpler alternative: narrow the fix to the production-reachable Temp branch while retaining raw OsString paths and pinned-parent verification; handle blob/grave disappearance separately.",
+  "planFile": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+  "planInDiff": true,
+  "reviewedFileCount": 1,
+  "target": "working tree diff",
+  "reviewedSha": "249bff207f19031746e63419dbbe37f0ef6ae65f",
+  "reviewedTree": "534b0384aa5c05eecc4d35dc71892f3a7d1713db",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 3,
+  "planFindingCount": 3,
+  "findings": [
+    {
+      "severity": "critical",
+      "title": "Locked RED is red for a different disappearance path",
+      "body": "The deterministic setup deletes unprocessed gravable blobs, while the plan explicitly admits that the Temp metadata path from the frontmatter symptom is order-dependent and not pinned. The committed verify-record confirms failure on SHA victims at Blob read. A blob-only fix can therefore green the locked regression while ordinary concurrent uploads still abort at Temp metadata. Green-only W2/W13-T witnesses do not repair the required RED proof.",
+      "file": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+      "line_start": 964,
+      "line_end": 976,
+      "confidence": 0.99,
+      "recommendation": "Recapture RED with a deterministic witness coordinated through the real put/write call site: ensure a real `.tmp-*` rename occurs after reconcile snapshots it, assert `run_once` completes and persists pending state, retain a no-rename control, then regenerate the lock and verify-record.",
+      "isPlanFinding": true
+    },
+    {
+      "severity": "critical",
+      "title": "String-based RawEntry introduces a second filename-handling flip",
+      "body": "The proposed Entry stores only a `String` name and reconstructs its path with `dir.join(&r.name)`. Today reconcile keeps `DirEntry::path()`—the original Unix filename bytes—and uses a lossy string only for classification. For an old `.tmp-` name containing invalid UTF-8, following this plan must either reject the snapshot or reconstruct a replacement-character path; the subsequent fstatat then sees the wrong name and skips a temp that the current implementation stats and deletes. That changes stats and can leak stale files outside the declared flip, and no witness covers it.",
+      "file": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+      "line_start": 488,
+      "line_end": 519,
+      "confidence": 0.98,
+      "recommendation": "Make RawEntry retain an OsString/raw byte name as the canonical path and fstatat operand, with a separate lossy String only for classification/logging. Add characterization for old and recent `.tmp-` entries containing invalid UTF-8 bytes.",
+      "isPlanFinding": true
+    },
+    {
+      "severity": "high",
+      "title": "The M12 deployment gate cannot run in the production container",
+      "body": "The procedure copies Python scripts into the application pod and executes `python3` and `rm`. The repository's final image is distroless static/nonroot and copies only `/files`, so it has neither Python nor the tar utility required by `kubectl cp`, nor `rm`. The referenced scripts are also absent from the repository and `scripts/**` is outside the locked production scope. Consequently G1-G6 cannot be measured on the actual PVC as written, leaving the accepted current virtiofs risk without its promised operational control.",
+      "file": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+      "line_start": 1240,
+      "line_end": 1247,
+      "confidence": 1,
+      "recommendation": "Specify a runnable one-shot Job/debug image that mounts the same PVC and contains the probes, include those probes in an allowed artifact path, and define output capture and cleanup without relying on tools inside the distroless application container.",
+      "isPlanFinding": true
+    }
+  ],
+  "next_steps": [
+    "Replace and re-verify the locked RED witness at the actual Temp rename seam.",
+    "Preserve raw filename bytes and add non-UTF-8 characterization.",
+    "Replace M12 with a runnable PVC-mounted probe Job, then rerun the plan gate."
+  ]
+}
