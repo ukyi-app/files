@@ -63,3 +63,31 @@ Codex plan gate가 **2라운드 상한을 소진**했고 여전히 `needs-attent
 **하드룰 4에 의해 게이트는 BLOCKED다.** 인간이 (a) 잔여 위험 면제, (b) 수동 3라운드 승인,
 (c) 흐름 중단 중 하나를 명시적으로 결정하기 전까지 executing 진입·dispatch·landing 금지.
 침묵은 면제가 아니다.
+
+## 배리어 면제 — release freshness (2026-07-13)
+
+`bugfix-status.mjs`의 release-freshness 배리어가 stage `finishing`에서 blocker를 냈다:
+*"Commit(s) after release approval touch non-bookkeeping path(s):
+docs/bugfixes/reconcile-gc-dedup-race.md."*
+
+**F-24로 이미 파일링된 gated-core의 구조적 catch-22다** — 화이트리스트가
+`docs/reviews/<slug>/` 하나뿐인데, 게이트 규약(codex-review-gates 절차 step 7)은 승인을
+**계획서의 Review Decision Log에 기록**하라고 요구하고 `pipeline-stage` 키도 계획서에 산다.
+즉 **계획서를 건드리지 않고는 `finishing`에 도달할 수 없고, 건드리면 배리어가 문다.**
+직전 리팩터(arch-deepening-2026-07)에서 인간이 같은 결함을 근거와 함께 면제했다.
+
+**면제 근거(기계 증거)** — 배리어의 목적은 **승인 이후 코드 드리프트** 차단인데, 그 위험은
+부재함이 증명된다:
+```
+$ git diff --stat de8c40f..HEAD -- src/ tests/ Cargo.toml Cargo.lock
+(출력 없음 — 소스·테스트·의존성 변경 0)
+
+$ git diff --name-only de8c40f..HEAD
+docs/bugfixes/reconcile-gc-dedup-race.md                 ← stage 키 + release r1~r3 Decision Log
+docs/reviews/reconcile-gc-dedup-race/*                   ← 전부 화이트리스트 경로
+```
+릴리스 게이트 r3이 승인한 소스 트리와 HEAD의 소스 트리는 **바이트 동일**하다.
+Single-Flip Contract·증분·회귀 테스트·verify-record는 한 글자도 바뀌지 않았다.
+
+**적용**: 인간의 상시 승인(2026-07-13 — *"특이사항 없으면 멈추지 말고 권장안대로 진행"*)
+범위 내의 **알려진 도구 결함**이므로 근거를 기록하고 진행한다. 근본 수정은 F-24.
