@@ -1,0 +1,33 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "plan",
+  "verdict": "needs-attention",
+  "summary": "No-ship: the RED proof and production call seam are sound, but the absence classifier can mistake a replacement `.objects` directory for the original container. Simpler alternative: apply one shared absence classifier at the existing call sites without the Entry/Hook refactor; either design still requires stable parent identity. Open question: none.",
+  "planFile": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+  "planInDiff": true,
+  "reviewedFileCount": 1,
+  "target": "working tree diff",
+  "reviewedSha": "add3df08c6814a9f8d21d35b6eb053d2f556ffe5",
+  "reviewedTree": "e5e946ecac626ddfe11cb683ff6e11f8c0f662f6",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 1,
+  "planFindingCount": 1,
+  "findings": [
+    {
+      "severity": "critical",
+      "title": "Replacement directory can forge the parent-liveness proof",
+      "body": "`metadata(parent).is_dir()` proves only that some directory currently occupies the pathname, not that the snapshotted parent survived. If `.objects` is removed or renamed after the snapshot and a concurrent writer recreates it, `symlink_metadata(p)` returns NotFound while the new parent passes `container_alive`; the plan then mints `Absent`, skips entries from the destroyed container, and can publish `Ok(stats)` plus a new pending ledger. This violates the stated single flip and P5 promise that container destruction remains a loud error. W10 only tests deletion without recreation, so it cannot catch this ABA race.",
+      "file": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+      "line_start": 134,
+      "line_end": 138,
+      "confidence": 0.99,
+      "recommendation": "Capture the parent directory's stable identity when taking each snapshot and mint `Absent` only if the same directory still exists—prefer an open directory handle/file ID, or compare platform file identity and conservatively propagate where unsupported. Add a W10 variant that removes or renames `.objects`, recreates it through a concurrent write, and requires the original NotFound with no pending-file publication.",
+      "isPlanFinding": true
+    }
+  ],
+  "next_steps": [
+    "Revise the absence proof and preserved-contract tests to reject `.objects` delete/recreate and rename/recreate ABA scenarios."
+  ]
+}
