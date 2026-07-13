@@ -1,0 +1,34 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "plan",
+  "verdict": "needs-attention",
+  "summary": "No-ship. P-7’s complete `PassGuard::begin` equality is correct, and the committed RED witness/verify-record match the exact symptom. However, the new downward-ladder closure omits `Entry::snapshot`, leaving a production-only escape hatch. Simpler alternative: add `snapshot` to W8(l₅) complete-body equality and cover the bypass with one mutant. Open question: none.",
+  "planFile": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+  "planInDiff": true,
+  "reviewedFileCount": 1,
+  "target": "working tree diff",
+  "reviewedSha": "23026c58c6cf93ea2b9ef1e2d5367067f5f1240a",
+  "reviewedTree": "e0a4d41889f6370094a3652163a5e97e02b78014",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 1,
+  "planFindingCount": 1,
+  "findings": [
+    {
+      "severity": "critical",
+      "title": "Entry::snapshot remains an unsealed production-only escape hatch",
+      "body": "W8(l₅) exact-matches `seen` and six methods but omits `Entry::snapshot`, although the locked `recover_graves` wrapper calls it before the locked recovery loop. An implementation can add `#[cfg(not(test))] super::legacy::raw(dir).await?;` inside `snapshot` and place the old grave walker in a new, unscanned module. The call contains none of W8(m–q)'s forbidden tokens, and W8(r) rejects `cfg!(` but not `#[cfg(not(test))]`. Consequently all l₁–l₆ equalities remain green; W11 and unit witnesses compile with `cfg(test)` and exclude the raw prepass, while the integration characterization does not create disappearing graves. Production can therefore retain the exact abort bug despite every declared witness passing, contradicting the plan’s claimed closed callee ladder.",
+      "file": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+      "line_start": 1049,
+      "line_end": 1063,
+      "confidence": 0.99,
+      "recommendation": "Add `Entry::snapshot`’s declaration and complete normalized body to W8(l₅), optionally ban `#[cfg(` in the production region as defense in depth, and add a mutant that inserts a `#[cfg(not(test))]` call from `snapshot` to an unscanned raw helper.",
+      "isPlanFinding": true
+    }
+  ],
+  "next_steps": [
+    "Extend W8(l₅) to exact-match `Entry::snapshot`.",
+    "Verify the production-only snapshot-prepass mutant fails W8 without running the regression suite during this plan review."
+  ]
+}
