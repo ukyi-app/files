@@ -1,0 +1,16 @@
+{
+  "regressionCmd": "cargo test --lib reconcile_pass_survives_an_entry_that_vanishes_after_the_snapshot",
+  "characterizationCmd": "cargo test --lib --bins --test adversarial --test contract --test e2e --test layout_tree --test openapi --test regression_reconcile_gc_dedup_race -- --skip reconcile_pass_survives_an_entry_that_vanishes_after_the_snapshot",
+  "flips": [
+    {
+      "testId": "reconcile_pass_survives_an_entry_that_vanishes_after_the_snapshot",
+      "symptomToken": "PASS ABORTED"
+    }
+  ],
+  "scope": [
+    "src/store/**"
+  ],
+  "red": { "sha": "33d05ca884acc6befa4c3cc751281695d67ee268" },
+  "green": { "sha": "" },
+  "notes": "단일 플립: '스냅샷 이후 사라진 .objects 항목이 패스 전체를 Err로 중단시킨다' → '그 항목을 건너뛰고 패스가 계속된다'. ⚠ 수정은 '?를 없앤다'가 아니다 — ErrorKind::NotFound인 경우에만 건너뛰고, 다른 모든 io 에러(EACCES·EIO 등)는 여전히 무가공 전파해야 한다(B7). 그러지 않으면 진짜 I/O 장애를 삼켜 두 번째 플립이 된다. characterizationCmd가 --skip으로 회귀 증인만 제외하는 이유: 증인이 lib 테스트라 분리 바이너리가 없다. ReconcileStats에 'skipped' 카운터를 추가하는 수정은 금지 — layout_tree.rs의 전수 구조체 assert_eq! 3곳이 깨진다(두 번째 플립)."
+}
