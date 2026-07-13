@@ -137,7 +137,7 @@ run 20: test result: ok. 1 passed; 0 failed; ... finished in 3.46s
 ## C5 — anti-cheat: characterization 미약화
 
 ```
-$ git diff 6545808..2dd7104 -- tests/
+$ git diff 6545808..de8c40f -- tests/
 ```
 회귀 테스트 파일(`tests/regression_reconcile_gc_dedup_race.rs`)의 **기계적 시그니처
 치환 3곳뿐**(`run_once(&root, g)` → `run_once(&s2, g, settle)` + `Store::clone()` 캡처(D-3)
@@ -149,7 +149,7 @@ $ git diff 6545808..2dd7104 -- tests/
 단언은 전부 **원문 그대로** 통과한다.
 
 **스킵된 테스트 0**(`#[ignore]` 0건). 테스트 수는 **증가만** 했다:
-105(baseline) → 133 → **134**. 추가된 것은 전부 이 픽스의 성질을 **더 강하게** 고정하는
+105(baseline) → **135**. 추가된 것은 전부 이 픽스의 성질을 **더 강하게** 고정하는
 증인이며, **전부 뮤턴트 킬로 검증**됐다(주장이 아니라 실측 RED).
 
 ---
