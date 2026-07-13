@@ -1,0 +1,57 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "plan",
+  "verdict": "needs-attention",
+  "summary": "No-ship: the RED witness is valid and exercises the real run_once seam, but the plan admits a second dangling-symlink flip, can swallow post-rename durability failures, and relies on a bypassable type barrier. Simpler alternative: classify source disappearance immediately around each syscall, verifying the directory entry is actually absent; keep destination and fsync errors raw, without the Entry wrapper.",
+  "planFile": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+  "planInDiff": true,
+  "reviewedFileCount": 1,
+  "target": "working tree diff",
+  "reviewedSha": "65a28d2ac30b913560e010ba902b5c6aab447603",
+  "reviewedTree": "175aa0bb764d03114810958366f4bd59a5e0b410",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 3,
+  "planFindingCount": 3,
+  "findings": [
+    {
+      "severity": "critical",
+      "title": "Dangling symlinks are a second observable flip",
+      "body": "The plan explicitly changes a persistent dangling `.tmp-` symlink from aborting reconciliation to being silently skipped forever. That directory entry did not vanish after the snapshot; only its target is absent. T-V1/T-V2 therefore codify behavior outside the locked symptom, potentially hiding permanent residue. Calling this an intended consequence does not satisfy the single-flip invariant.",
+      "file": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+      "line_start": 419,
+      "line_end": 423,
+      "confidence": 0.99,
+      "recommendation": "Preserve the existing dangling-symlink behavior by confirming the source directory entry itself is absent before producing Gone, and replace T-V1/T-V2 with deterministic source-removal witnesses. Otherwise route the symlink policy change through a separate pipeline.",
+      "isPlanFinding": true
+    },
+    {
+      "severity": "critical",
+      "title": "Whole-operation conversion can swallow durability failures",
+      "body": "`Seen::of` wraps the entire `pass.grave()` result. In current code, `PassGuard::grave` delegates to `atomic::rename_durable`, whose single result covers both rename and parent-directory fsync. A NotFound from the destination/parent or from fsync after a successful rename is therefore misreported as Gone. The loop continues without a Graved token, may remove the tombstone during final cleanup, and returns Ok instead of propagating the durability error—a second observable flip that violates B7.",
+      "file": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+      "line_start": 193,
+      "line_end": 194,
+      "confidence": 0.99,
+      "recommendation": "Split source rename from durability settlement at a typed boundary. Only a proven source-absent rename result may become Gone; destination and post-rename fsync failures must remain raw io::Error values. Add a fault-injection witness for rename success followed by fsync failure.",
+      "isPlanFinding": true
+    },
+    {
+      "severity": "high",
+      "title": "The claimed type-level enforcement is bypassable",
+      "body": "The plan relies on construction for file_type and the unwitnessed M4–M6 paths, but the proposed Entry does not enforce that construction. Because Entry and the loop live in the same Rust module, `entry.inner.file_type().await?` remains accessible. Even inside a method, `Ok(Seen::Present(self.inner.file_type().await?))` type-checks while propagating NotFound raw, and `let _ = entry.remove().await?` can ignore Gone. The stated acceptance tests cannot catch these mutations. The related claim that `From<io::Error> for Seen<T>` would make `?` produce Gone is also incorrect for a function returning `io::Result<Seen<T>>`.",
+      "file": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+      "line_start": 413,
+      "line_end": 414,
+      "confidence": 1,
+      "recommendation": "Place Entry internals behind a child-module privacy boundary, make the syscall-to-Seen conversion inaccessible to callers, and add injectable or mutation witnesses for file_type, remove, grave, and recover_graves. Remove the invalid M8 claim.",
+      "isPlanFinding": true
+    }
+  ],
+  "next_steps": [
+    "Revise Gone so it carries source-disappearance provenance rather than only ErrorKind.",
+    "Resolve the dangling-symlink behavior as preserved behavior or a separate pipeline.",
+    "Seal and test the abstraction before rerunning the plan gate."
+  ]
+}
