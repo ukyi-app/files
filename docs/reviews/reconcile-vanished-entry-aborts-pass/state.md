@@ -3,7 +3,7 @@ bugfix: reconcile-vanished-entry-aborts-pass
 invariant-class: bugfix       # Rule 0: 관측 행동이 정확히 하나 뒤집힌다(사라진 항목이 패스를 중단시킴 → 건너뜀)
 entry-track: bug
 review-track: standard        # 단일 증분 국소 수정(새 seam 불필요). 배리어 1~4는 트랙 무관하게 적용된다
-pipeline-stage: intake
+pipeline-stage: diagnose
 issue-tracker: local
 worktree:
 branch:
