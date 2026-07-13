@@ -1,0 +1,18 @@
+{
+  "kind": "bugfix-verify-green",
+  "bug": "reconcile-gc-dedup-race",
+  "sha": "de8c40fa45d3324ddbf0f76dc06c5cb822adbb7c",
+  "treeSha": "da40ffd4e8dd59a9b01e8d6eeb6a3cd2606f5220",
+  "regression": {
+    "exit": 0,
+    "passed": true,
+    "outputTail": "\nrunning 1 test\ntest dedup_put_during_reconcile_window_must_not_lose_blob ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.50s\n\n"
+  },
+  "characterization": {
+    "exit": 0,
+    "green": true,
+    "outputTail": "unwritable_and_says_so_loudly ... ok\ntest store::pins::tests::stuck_pin_defers_reclamation_but_never_stalls_the_pass ... ok\n\ntest result: ok. 116 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.65s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 8 tests\ntest reserved_suffix_keys_rejected_at_runtime ... ok\ntest upload_rejected_507_no_temp_residue_existing_intact ... ok\ntest download_content_type_is_stored_type_and_206_has_all_headers ... ok\ntest internal_object_reads_are_no_store_and_vary_authorization ... ok\ntest query_key_decoding_and_validation_contract ... ok\ntest concurrent_nested_puts_with_reconcile_loop_preserve_all ... ok\ntest concurrent_same_key_put_delete_self_consistent ... ok\ntest concurrent_readers_never_observe_desync_on_same_size_overwrite ... ok\n\ntest result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.34s\n\n\nrunning 1 test\ntest responses_match_openapi_schema ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s\n\n\nrunning 2 tests\ntest public_listener_isolates_api_and_internal_buckets ... ok\ntest large_object_streaming_put_and_range_download ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.47s\n\n\nrunning 3 tests\ntest put_stream_midflight_temp_observed_and_preserved ... ok\ntest symlinked_commit_pointer_current_behavior ... ok\ntest on_disk_layout_golden_tree ... ok\n\ntest result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s\n\n\nrunning 5 tests\ntest does_not_serve_interactive_docs_ui ... ok\ntest spec_binary_upload_and_internal_only ... ok\ntest spec_object_ops_document_error_codes ... ok\ntest serves_generated_openapi_spec_unauthenticated ... ok\ntest spec_download_declares_binary_range_and_key_grammar ... ok\n\ntest result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s\n\n"
+  },
+  "repro": null,
+  "note": "written by bugfix-status.mjs --verify-flip (script-owned re-execution)"
+}
