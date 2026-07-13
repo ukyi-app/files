@@ -59,11 +59,33 @@ type AsyncHook = Arc<dyn Fn(&str) -> BoxFuture<'static, ()> + Send + Sync>;
 type SyncHook = Arc<dyn Fn(&str) + Send + Sync>;
 type FailHook = Arc<dyn Fn(&str) -> std::io::Result<()> + Send + Sync>;
 
-/// 필드는 정확히 7개다. 늘리지 마라.
+/// 필드는 정확히 8개다. 늘리지 마라.
+///
+/// # ⚠ 8번째 훅 `pre_entry` — **왜 이것이 두 번째 플립이 아닌가**
+///
+/// F-14의 증상은 `.objects` 항목 루프의 **Temp 분기**(`reconcile.rs`의 `e.metadata().await?`)에서
+/// 난다. 그 분기에 **결정적으로** park를 걸 수 있는 훅이 7개 중 **하나도 없었다**(`during_collect`는
+/// 스냅샷 **이전**, `post_observe`는 **put 경로**, `pre_grave`/`post_grave`는 **Blob 분기 전용**)
+/// ⇒ Temp 분기의 RED 증인은 **8번째 훅 없이는 쓸 수 없다**. 그래서 연다.
+///
+/// **관측 행동 변화는 0이다**(기존 7개 훅과 **같은 논증**):
+/// * 프로덕션 `Hooks`는 `BlobPins::new()` → `Hooks::default()` ⇒ `pre_entry = None`
+///   ⇒ `hooks.pre_entry(&name).await`는 **즉시 반환**한다: syscall 0 · fs 접촉 0 · 상태 변경 0 · 로그 0.
+/// * 훅을 심는 유일한 통로 `BlobPins::with_hooks`는 **`#[cfg(test)]`** ⇒ 프로덕션 바이너리에는
+///   훅을 넣을 **경로 자체가 없다**.
+///
+/// **P4 봉인도 그대로다**: `AsyncHook`의 반환형은 **`()`**이고(호출부의 제어 흐름을 바꿀 수 없다 —
+/// `reconcile.rs`는 결과를 **바인딩조차 하지 않는다**), 받는 것은 **항목 이름 `&str` 하나**다
+/// (`BlobPins`도 `landed`/`live`도 손에 쥐지 못한다 ⇒ **술어가 아니다**). `Graved`의 유일한 생성자와
+/// `settle(self)`라는 유일한 판정 API는 **한 글자도 바뀌지 않는다**(봉인 체크리스트 ④⑤ 문언 유지).
 #[derive(Clone, Default)]
 pub(crate) struct Hooks {
     post_observe: Option<AsyncHook>,
     during_collect: Option<AsyncHook>,
+    /// `.objects` 항목 루프에서 **그 항목의 첫 FS 접촉 직전**에 발화한다(`file_type()` **이전**).
+    /// 인자는 sha가 아니라 **항목 이름**(`.tmp-…`도 온다). 예약 이름(`ObjectsEntry::Reserved`)은
+    /// **`continue` 뒤**라 발화하지 않는다 — O1(예약 이름에 stat 0)을 보존한다.
+    pre_entry: Option<AsyncHook>,
     pre_grave: Option<AsyncHook>,
     post_grave: Option<AsyncHook>,
     in_commit_pre_rename: Option<SyncHook>,
@@ -80,6 +102,12 @@ impl Hooks {
     pub(crate) async fn during_collect(&self, sha: &str) {
         if let Some(h) = &self.during_collect {
             h(sha).await;
+        }
+    }
+    /// 항목 루프의 **첫 FS 접촉 직전**. prod = `None` ⇒ **즉시 반환**(no-op).
+    pub(crate) async fn pre_entry(&self, name: &str) {
+        if let Some(h) = &self.pre_entry {
+            h(name).await;
         }
     }
     pub(crate) async fn pre_grave(&self, sha: &str) {
@@ -1246,7 +1274,7 @@ mod tests {
 
     /// **S-3 다리 스모크 — B-2의 배리어 안무가 *구성 가능함*을 증명한다.**
     ///
-    /// 이 테스트가 존재하는 유일한 이유: **한 증인 안에서** ⓐ `Hooks`를 **짓고**(7개 필드는 `pins.rs`
+    /// 이 테스트가 존재하는 유일한 이유: **한 증인 안에서** ⓐ `Hooks`를 **짓고**(8개 필드는 `pins.rs`
     /// private → **이 모듈에서만** 리터럴 가능) ⓑ **주입형 시각**의 reconciler를 **돌린다**
     /// (`run_once_at`은 `reconcile.rs` private → **`run_once_at_for_test` 다리로만** 도달 가능).
     /// 이 둘이 갈라져 있으면 T-B1·T-B2·T-B4·T-C2·T-C3·T-P4a·T-P4b-1·T-P4b-2는 **쓸 수 없다.**
@@ -2746,11 +2774,22 @@ mod tests {
     /// **F-14 회귀 증인**(`reconcile-vanished-entry-aborts-pass`) — `src/store/pins/tests/vanished_entry_regression.rs`.
     ///
     /// **`tests`의 자식**이다(형제가 아니다). 두 벽을 **동시에** 넘어야 하기 때문이다:
-    /// ① `Hooks`의 **7개 필드는 `pins` private**이므로 훅을 리터럴로 짓는 증인은 `pins`의 **자손**이어야
-    ///    한다(그리고 `Hooks`는 **늘리지 않는다** — 위 `Hooks` 정의의 못).
+    /// ① `Hooks`의 **8개 필드는 `pins` private**이므로 훅을 리터럴로 짓는 증인은 `pins`의 **자손**이어야
+    ///    한다(필드 계수는 위 `Hooks` 정의가 소유한다).
     /// ② 위 **랑데부 프리미티브**(`arrived`/`finish_pass`/`probe_still_waiting`/`plant_orphan_blob`/
     ///    `seed_expired_tombstones`…)는 **이 모듈 private**이므로 **형제 모듈은 재사용할 수 없다** →
     ///    형제로 두면 *"위험한 반복구는 여기 한 곳에만 산다"*가 깨진다(복사본이 생긴다).
     /// **자식**이면 ①②를 둘 다 만족하며 기존 테스트의 가시성을 **한 글자도 넓히지 않는다**.
     mod vanished_entry_regression;
+
+    /// **F-14 Temp 분기 회귀 증인** — `src/store/pins/tests/vanished_temp_regression.rs`.
+    ///
+    /// 위 형제(`vanished_entry_regression`)는 **Blob 분기**(`tokio::fs::read`)를 때린다. 그러나
+    /// 프론트매터가 적은 **증상 그 자체**는 **Temp 분기**다(동시 `put_stream`이 `.tmp-<uniq>`를 최종
+    /// blob 이름으로 rename → 사라진 temp의 `metadata()`가 ENOENT → 패스 전체 Err). 두 분기를 **따로**
+    /// 핀하지 않으면 *"Blob만 고친 픽스"*가 잠긴 회귀를 초록으로 만들면서 **프로덕션이 실제로 밟는
+    /// Temp 경로는 그대로 망가진 채** 남는다 ⇒ 기계 배리어가 헛돈다. 이 증인이 그 구멍을 막는다.
+    ///
+    /// `tests`의 **자식**인 이유는 형제와 같다(훅 필드 private · 랑데부 프리미티브 private).
+    mod vanished_temp_regression;
 }

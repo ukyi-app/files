@@ -188,6 +188,13 @@ async fn run_once_at(
         if matches!(class, ObjectsEntry::Reserved) {
             continue;
         }
+        // **결정적 배리어** — 이 항목의 **첫 FS 접촉 직전**(= `file_type()` 이전 · 예약 이름 `continue`
+        // **이후** ⇒ O1의 "예약 이름에는 stat을 걸지 않는다"가 보존된다). prod = `None` ⇒ 즉시 반환
+        // (syscall 0 · 상태 변경 0) ⇒ **관측 행동 변화 0**.
+        // 이 창이 없으면 **Temp 분기**(아래 `e.metadata().await?`)의 소멸 레이스를 결정적으로 재현할
+        // 방법이 없다 — `pre_grave`는 **Blob 분기 전용**이라 temp에는 영영 발화하지 않는다.
+        // 반환값은 `()`다 → 이 훅은 아래 분기 판정에 **개입할 수 없다**(P4 봉인 유지).
+        pass.pins().hooks().pre_entry(&name).await;
         // O2: 디렉터리 스킵은 temp/blob 처리보다 앞.
         let ft = e.file_type().await?;
         if ft.is_dir() {
@@ -273,7 +280,7 @@ async fn run_once_at(
 }
 
 /// **테스트 전용 다리(S-3).** B-2의 배리어 증인은 **두 기능을 같은 테스트 안에서** 요구한다:
-/// ① `Hooks` 구성 — 7개 필드가 **`pins.rs` private**이라 그 모듈(과 그 `mod tests`) 안에서만
+/// ① `Hooks` 구성 — 8개 필드가 **`pins.rs` private**이라 그 모듈(과 그 `mod tests`) 안에서만
 /// 리터럴로 지을 수 있다 · ② **주입형 시각**의 reconciler — `run_once_at`은 **이 모듈 private**이다.
 /// 이 둘이 형제 private 모듈로 갈라져 있으면 `pins.rs`의 증인은 훅을 짓고도 시계를 주입할 수 없고,
 /// `reconcile.rs`의 증인은 그 반대다 → B-2의 안무(§6: `run_once_at` + `Hooks{pre_grave, post_grave, …}`)를
@@ -281,7 +288,7 @@ async fn run_once_at(
 ///
 /// **프로덕션 표면은 한 글자도 넓어지지 않는다**:
 /// * `run_once_at`은 여전히 **이 모듈 private**(`pub` 아님) — 밖에서 부를 수 없다.
-/// * 보호 상태(`landed`/`live`)와 `Hooks`의 **7개 필드는 `pins.rs` private 그대로**다.
+/// * 보호 상태(`landed`/`live`)와 `Hooks`의 **8개 필드는 `pins.rs` private 그대로**다.
 /// * 이 래퍼는 `#[cfg(test)]` → **릴리스 빌드에 존재하지 않는다.**
 /// * 위임 외에 **아무 일도 하지 않는다** — 주입형-시각 안무를 약화시키지 않는다.
 #[cfg(test)]
