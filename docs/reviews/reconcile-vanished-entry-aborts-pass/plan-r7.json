@@ -1,0 +1,34 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "plan",
+  "verdict": "needs-attention",
+  "summary": "Do not ship. The committed RED witness and verify record correctly pin the real pass-abort symptom, but the new load-bearing W12 cfg/link closure is both self-failing and bypassable. This is a new downward-closure defect, not the registered M18 class. Simpler alternative: replace the raw substring rules with one token-aware Rust syntax scan. Open question: none.",
+  "planFile": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+  "planInDiff": true,
+  "reviewedFileCount": 1,
+  "target": "working tree diff",
+  "reviewedSha": "890987d6a2263131f6a38fcb997701647557a47d",
+  "reviewedTree": "50d455ab2982598608d8e9199f35d72bda719e17",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 1,
+  "planFindingCount": 1,
+  "findings": [
+    {
+      "severity": "critical",
+      "title": "W12's raw-text closure gate cannot safely reach GREEN",
+      "body": "W12 scans every `src/store/**/*.rs` file after removing only comments, but its own implementation contains the forbidden needles as string literals (`\"#[cfg(not(\"`, `\"cfg!(\"`, `\"cfg_attr\"`, `\"#[path\"`, and `\"include!(\"`). Because W12 lives in `src/store/mod.rs`, every zero-count assertion matches at least its own needle and fails. Splitting those literals alone is insufficient: valid Rust spellings such as `#[cfg (not(test))]`, `cfg ! (test)`, `#[ path = \"...\"]`, and `include !(\"...\")` evade the exact substring checks, reopening the production-skew and link-redirection classes W12 claims to close. An engineer following the plan either gets permanently stuck or weakens the gate into an unsafe GREEN.",
+      "file": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+      "line_start": 1208,
+      "line_end": 1219,
+      "confidence": 1,
+      "recommendation": "Replace W12 with a Rust lexer/parser or token-normalized scan that ignores comments and literal contents while recognizing attributes and macro invocations independent of whitespace. Verify it scans `mod.rs` itself and add spaced-spelling mutants for every forbidden construct.",
+      "isPlanFinding": true
+    }
+  ],
+  "next_steps": [
+    "Correct W12 and add self-scan plus whitespace-variant witnesses.",
+    "Update B-1 implementation and acceptance text to explicitly require W12/W1–W12 before rerunning the plan gate."
+  ]
+}
