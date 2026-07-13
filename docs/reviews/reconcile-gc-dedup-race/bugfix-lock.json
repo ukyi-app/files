@@ -18,7 +18,7 @@
     "sha": "65458082b6692acd0345763da96ef9a811ae745e"
   },
   "green": {
-    "sha": "2dd7104b8c56e70936ad71c4cd5f1abd1e9b29c8"
+    "sha": "de8c40fa45d3324ddbf0f76dc06c5cb822adbb7c"
   },
   "notes": "단일 플립: '스냅샷 이후 dedup으로 참조를 얻은 블롭이 같은 reconcile 패스에서 삭제된다' → '삭제되지 않는다'. 나머지(2단계 tombstone 의미론·temp grace 보존·비트로트 격리·목록/서빙 계약·에러 표면)는 전부 보존되어야 한다 = characterizationCmd. characterizationCmd가 회귀 테스트를 제외하는 이유: red.sha에서 회귀만 빨갛고 나머지는 초록이어야 두 번째 잠복 플립이 빨강 뒤에 숨지 못한다. scope는 수정이 닿을 수 있는 비-테스트 표면 — 블롭 생명주기 seam(store 내부)과 reconcile 호출부(main.rs). 설계가 이 밖을 요구하면 scope를 개정하고 Decision Log에 근거를 남긴다. | scope 개정(release gate R-4 수용, 2026-07-13): CONTEXT.md와 docs/adr/**를 명시 추가. B-3의 acceptance가 이 두 문서 갱신을 **요구**했으나(용어집에 핀·착지·무덤·코호트 등재, ADR-0002 신설) lock이 선언하지 않아 배리어 B4의 scope 증명이 거짓이었다. 이 둘은 테스트도 slug-키 북키핑도 아니므로 면제되지 않는다 — 선언이 정답이다."
 }
