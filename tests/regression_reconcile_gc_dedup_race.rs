@@ -79,6 +79,9 @@ const PUT_DELAY: Duration = Duration::from_millis(15);
 /// grace=0 → tombstone이 조금이라도 과거면 즉시 삭제 대상.
 const GC_GRACE: Duration = Duration::from_secs(0);
 
+/// GC 무덤 정산 대기의 상계. 이 테스트의 put은 밀리초 단위로 끝나므로 발화하지 않는 넉넉한 값.
+const SETTLE_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// tombstone backdate 폭. grace(0)를 압도적으로 넘겨 첫 패스에서 삭제가 확정되게 한다(요소 1).
 const TOMBSTONE_BACKDATE_SECS: u64 = 3600;
 
@@ -146,8 +149,10 @@ async fn run_round() -> (usize, usize, reconcile::ReconcileStats) {
     // 2) reconcile 시작. 이 시점엔 희생 meta가 없으므로 collect_referenced() 스냅샷은
     //    희생 sha를 모른다 → 삭제 후보로 확정된다.
     let rec = {
-        let root = root.clone();
-        tokio::spawn(async move { reconcile::run_once(&root, GC_GRACE).await })
+        // ⚠ 같은 Store를 공유해야 한다(D-3). `Store::new(root)`로 재구성하면 핀 등록부가
+        // 갈라져 reconcile이 이 put들을 영영 보지 못한다 — 원인은 프로덕션이 아니라 배선이다.
+        let s2 = (*s).clone();
+        tokio::spawn(async move { reconcile::run_once(&s2, GC_GRACE, SETTLE_TIMEOUT).await })
     };
 
     // 3) 스냅샷 이후(= 창 안)에 **같은 내용**으로 재-put → dedup 분기(요소 2 + 요소 3).

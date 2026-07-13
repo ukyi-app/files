@@ -1,0 +1,35 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "structure",
+  "verdict": "needs-attention",
+  "summary": "Do not ship B-1 yet. S-1 and S-2 are structurally resolved, but the committed seam cannot host B-2’s required deterministic witnesses without an unplanned visibility change or weaker tests.",
+  "planFile": "docs/bugfixes/reconcile-gc-dedup-race.md",
+  "planInDiff": null,
+  "reviewedFileCount": 18,
+  "target": "branch diff against main",
+  "reviewedSha": "97b0ff16dfee1256bfa375b706237adc73647bb9",
+  "reviewedTree": "9717d4cfb4ae91cfa058e165b4eee6d48bc5e597",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 1,
+  "planFindingCount": 0,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "B-2’s deterministic test seam is split across private sibling modules",
+      "body": "`run_once_at` is private to `reconcile.rs`, while the hook fields needed to construct B-2’s prescribed barrier choreography are private to sibling module `pins.rs`. Tests under `pins.rs` can construct `Hooks` but cannot call the injected-time reconciler; tests under `reconcile.rs` have the inverse limitation. B-2 repeatedly requires both facilities in the same deterministic witnesses, so it cannot compose onto B-1 as planned without widening production visibility, adding an unplanned bridge, or weakening the recorded injected-time choreography. This should be corrected while the seam is still cheap to change.",
+      "file": "src/store/reconcile.rs",
+      "line_start": 116,
+      "line_end": 122,
+      "confidence": 0.99,
+      "recommendation": "Add an explicitly test-only injected-time reconcile wrapper with visibility limited to `store`, callable from `pins.rs` tests. Keep `run_once_at`, protection state, and all seven hook fields private in production.",
+      "isPlanFinding": false
+    }
+  ],
+  "next_steps": [
+    "Add the test-only cross-module bridge to B-1.",
+    "Confirm B-2’s planned barrier tests can access both hook construction and injected time without expanding production APIs.",
+    "Repeat the structure review; do not re-run machine-owned tests in this gate."
+  ]
+}

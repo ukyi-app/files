@@ -3,11 +3,11 @@ bugfix: reconcile-gc-dedup-race
 invariant-class: bugfix
 entry-track: bug
 review-track: full
-pipeline-stage: executing
+pipeline-stage: finishing
 issue-tracker: local
 symptom: "reconcile가 참조 스냅샷을 뜬 뒤 동시 put이 dedup 경로로 그 블롭을 커밋하면, GC가 살아있는 블롭을 삭제한다 — 커밋 포인터는 남고 블롭만 사라져 객체가 영구 non-servable이 된다(GET 404 / list 제외). 데이터 손실."
 red-baseline: 65458082b6692acd0345763da96ef9a811ae745e
-bugfix-lock: red
+bugfix-lock: green
 first-increment: [B-1]
 increments: [B-1, B-2, B-3]
 spike-1:
@@ -1083,6 +1083,64 @@ blocking 클로저, rename과 마킹 사이에 `await`가 없다). **알 수 없
 | **골든 트리 잔재 0 — 구조적 사실** | ① 무덤은 `.objects` **직속 평면 파일**이다 — **`mkdir`이 코드에 없다** → 빈 디렉터리 잔재가 **불가능**하다(`rel_files`가 디렉터리를 수집하지 않는다는 `layout_tree.rs:20-36`의 **허점에 기대지 않는다**). ② 골든 스크립트의 reconcile은 `gc_deleted:0, gc_pending:1` — **첫 관측 → `pending.insert`**이므로 `grave()`에 **진입조차 하지 않는다**. ③ 정상 완료 패스는 무덤을 남길 수 없다(`grave()`의 결과는 같은 표현식에서 `settle()`에 소비되고 `?` 외 탈출 경로가 없다) → `expected` 리스트 **바이트 동일** |
 | **`RESERVED_SUFFIXES` / `valid_key`** | 불변. `segment_ok`(`layout.rs:19`)가 `.` 시작 세그먼트를 금지 → 사용자 키와 무덤 이름 **충돌 불가**. `pointers_all`은 `.objects` 스킵(`layout.rs:262`), `is_commit_pointer_name`은 `.meta.json` 요구 |
 | **`write_atomic` 공개 시그니처** | **불변**(`pub async fn write_atomic(&Path, &[u8]) -> io::Result<()>`). 내부만 단일 blocking 클로저로 위임 — **syscall 시퀀스 축자 동일**, 취소 입도만 "부분 → 전무"로 **좁아진다**(부분 상태의 순감소) |
+| **같은 키의 쓰기 직렬화 (B8)** | `KeyLocks`·`lock_key`·가드 획득 지점 **무변경**. 바뀐 것은 **가드의 수명**뿐이다 — 커밋 클로저로 **이전**된다(S-1 수리). ⚠ **그 수리가 새 degraded-path 행동을 낳는다**: **멈춘 fs에서 그 `bucket/key`는 프로세스 재시작까지 쓰기 불가**다. **오늘 없던 상태**이므로 아래 §재시작-필요 복구 계약에 **정직하게** 편다 — 릴리스 게이트 제출물 |
+| **`KeyLocks::lock`의 대기 의미론** | **무한정 대기·에러 반환 없음 — 불변.** B-1이 더한 것은 `LOCK_WARN_AFTER`(30s) 초과 시의 **`tracing::error!` 한 줄**뿐이다. 대기 퓨처를 **드롭하지 않고** 계속 await하므로 tokio Mutex의 **FIFO 대기열 위치도 보존**된다 → 공정성 포함 **행동 delta 0**. 반환 타입에 실패가 없다(`KeyGuard`, `Result` 아님) → *"타임아웃으로 가드를 포기한다"*가 **표현 불가**하다(S-1 부활 차단). 증인: **T-S2** ⑤ |
+
+### ⚠ 재시작-필요 복구 계약 (S-2 — **새 degraded-path 행동**, 릴리스 게이트 제출물)
+
+> **무엇이 바뀌는가.** 커밋 클로저는 `PinGuard`와 `KeyGuard`를 **함께 소유**하며 rename·fsync가 끝난 뒤에야
+> 놓는다. **시작된 `spawn_blocking`은 취소할 수 없다.** 따라서 계획서가 **스스로 모델링한** "반환하지 않는
+> 파일시스템 연산"(P7의 존재 이유) 하에서는, `upload_timeout`이 호출자 퓨처를 드롭해도 detach된 클로저가
+> 그 키를 **syscall이 반환하거나 프로세스가 재시작될 때까지** 붙들고 있다 →
+> **그 `bucket/key`는 재시작까지 쓰기 불가**다. 같은 키의 DELETE는 **타임아웃이 없고**(`objects.rs`의
+> `delete`), PUT 재시도는 **대기 전에 전역 capacity를 예약**하므로(`http/internal/files.rs`) 그 키로
+> 재시도가 쌓이면 **전역 capacity를 갉아** 장애가 번질 수 있다.
+>
+> **이것은 의도된 교환이다.** 가드를 타임아웃으로 놓는 것은 **금지**다 — S-1이 되살아난다.
+
+**왜 두 번째 관측 행동 플립이 아닌가 (정직한 논증)**
+
+1. **오늘, 같은 입력에서 무슨 일이 일어나는가.** 오늘의 커밋도 `tokio::fs::rename` = `spawn_blocking`이다
+   (§크래시 렌즈가 이미 코드로 증명). 오늘 그 rename이 반환하지 않으면 — 키 가드가 **호출자 퓨처**에 있으므로
+   `upload_timeout`이 그것을 **풀어버린다** → 같은 키의 DELETE가 진행돼 **성공**하고 → 뒤늦게 깨어난 낡은
+   rename이 **삭제된 키를 되살린다**. 즉 **오늘의 행동은 "쓰기 가능 + 조용한 되살아나기"**이고, 새 행동은
+   **"쓰기 불가 + 되살아나기 없음"**이다. **정상 → 비정상의 플립이 아니라, 병리적 입력 하에서 두 실패 모드 중
+   무엇을 택하느냐**다. 그리고 그 선택은 **잠김(가용성) < 되살아나기(무결성)** — 삭제된 키의 부활은 **조용한
+   데이터 손상**이고, 잠김은 시끄러운 가용성 손실이다.
+2. **그 입력에서는 오늘도 스토어가 사실상 죽어 있다.** reconcile도 **같은 fs**를 읽는다
+   (`recover_graves`·`collect_referenced`). 멈춘 fs는 이 스토어의 **전역 장애**이지 이 키의 국소 장애가 아니다.
+   `settle_timeout`(P7)이 애초에 존재하는 이유가 바로 그 상황의 모델링이다 — **계획서가 스스로 인정한 전제**다.
+3. **blast radius.** 홈랩 **단일 replica + RWO PVC**라 잠기는 것은 **그 키 하나**다(락은 `bucket/key` 단위 —
+   `lock_key`). 다른 키의 PUT/DELETE는 영향받지 않는다.
+4. **관측 계약의 표면.** 이 픽스가 세는 플립은 characterization·regression이 **실제로 구동하는** 관측 표면의
+   행동이다. "반환하지 않는 syscall"은 **프로덕션 fs에서 어떤 테스트도 구동할 수 없는 입력**이며(T-S2는 훅으로
+   그 대역을 **모형화**할 뿐이다), 그 입력에서 오늘의 결과는 "정의된 행동"이 아니라 **조용한 손상**이다.
+
+**⚠ 그럼에도 정직하게 — 반론을 숨기지 않는다.** 이것은 **오늘 없던 상태**다("그 키가 재시작까지 쓰기 불가").
+"관측 불가한 입력"이라는 4번 논거는 **약하다** — 멈춘 NFS·풀린 PVC는 홈랩에서 실재하는 입력이다.
+릴리스 게이트가 이것을 **숨겨진 두 번째 플립**으로 판정하면 **Blocker로 받아들인다.** 우리는 숨기지 않는다 —
+계약은 **네 곳**에 박혀 있다: `PinGuard::commit_pointer` doc · `KeyGuard` doc · **T-S2**(기계 증인) ·
+`KeyLocks::lock`의 **`tracing::error!`**(운영자가 그 상황을 **본다**).
+
+**관측성 — 그 상황은 침묵하지 않는다.** `KeyLocks::lock`은 획득이 `LOCK_WARN_AFTER`(**30s**)를 넘기면
+**한 번** `error!`를 내고 **계속 기다린다**(행동 delta 0 · `ReconcileStats` 필드 0개 추가):
+
+```text
+key lock held beyond threshold — an uncancellable commit may be wedged on a stalled filesystem;
+this key stays unwritable until the syscall returns or the process restarts (deliberate:
+releasing the guard would let a detached commit resurrect a deleted key)
+    bucket=<b> key=<k> waited_ms=30000
+```
+
+첫 절은 **사실**("락이 임계를 넘겨 잡혀 있다")이고 해석절은 **유보**("**may** be wedged")다 — 알려진 오탐
+클래스(`put_stream`이 스트리밍 본문 내내 락을 쥐므로 같은 키의 동시 writer가 `upload_timeout`(600s)까지
+**정당하게** 대기할 수 있다)에서도 **거짓말하지 않는다**.
+
+**→ F-30 (후속 파이프라인)**: **키-바인드 펜싱 / 버전화된 포인터 발행으로 잠김 **없이** 되살아나기를 막는다.**
+커밋이 자기 키의 **펜스 토큰**(또는 포인터 세대 번호)을 들고 rename하고, 발행 시점보다 낡은 토큰의 rename은
+**커밋 자체가 거부**한다 → 가드를 일찍 놓아도 낡은 커밋이 이길 수 없다 ⇒ **잠김 0 · 되살아나기 0**.
+Codex의 첫 번째 권고이며 **설계가 커져서**(원자적 세대 발행 + 크래시 복구 시 세대 재구성 + 무덤/복구 경로와의
+상호작용) 이번 범위에서 뺐다. 그때까지의 계약이 위의 **재시작-필요 복구**다.
 
 ### ⚠ 이 픽스는 부분 해결이다 (D-4)
 
@@ -1117,6 +1175,9 @@ blocking 클로저, rename과 마킹 사이에 `await`가 없다). **알 수 없
    HTTP 응답은 불변(`400 upload_timeout`).
 3. **`write_atomic` 전체가 무취소가 되며** 다른 호출부(`delete`의 fsync, gc-pending 쓰기)의 부분 상태가
    사라진다. 순개선.
+
+> ⚠ **네 번째 부수 변화는 이 목록에 넣지 않는다** — **재시작-필요 복구 계약**(S-2)은 "테스트 없음"이 아니다.
+> **T-S2가 기계 증인**이고 `tracing::error!`가 운영 증인이다. §재시작-필요 복구 계약 참조.
 
 ## Regression test (already RED at red.sha)
 
@@ -2644,3 +2705,64 @@ for P-7 beyond the implemented bounded await.** Open question: none."*
 | **D-4** | **최종안의 "B-3 = 격리 분기(F4) 봉인"을 제외한다.** B-3은 **위생·관측성·문서만**. 격리 분기는 **현행 그대로 보존**(`rename(blob → .corrupt)` 직접). F4는 **F-25로 분리**(청사진·T-Q1 포함) | **두 번째 관측 행동 플립**이다("치유된 blob이 격리되어 404가 된다" → "안 된다"). gated-bugfix **하드룰 10**: *"두 번째 관측 행동 플립은 근본 원인을 공유하거나 first-increment diff 안에 들어오더라도 **항상 별도 파이프라인**."* 최종안 스스로도 "게이트가 one-flip 엄격 해석을 요구하면 별도 bugfix로 파일링 가능"이라고 인정했다. **대가**: 이 픽스는 증상 클래스에 대해 **부분 해결**이며, 최종안 §2의 "GC의 유일한 파괴 연산" 주장은 **거짓으로 남는다** → §Preserved Contract와 §남은 위험 1에 **미해결 유실 경로로 굵게 명시**했다. 릴리스 게이트가 이 사실이 숨겨졌다고 판단하면 **Blocker**다 |
 
 ### Codex Plan Review — r8: clean — verdict approve, 0 findings, reviewedSha `a22771b` (docs/reviews/reconcile-gc-dedup-race/plan-r8.json). *"Ship the Round 8 plan. P-8 now proves the grave and restoration; P-9 observes all three parked put tasks through teardown after the stall assertions. The committed RED record matches red.sha and pins the stated data-loss symptom; no tests were re-run. No new critical issue found. Simpler alternative: none. Open question: none."*
+
+---
+
+## Structure Gate (B-1 — walking skeleton)
+
+### Codex Structure Review — r1 (2026-07-13) — `needs-attention`, 1 finding
+
+아티팩트: `docs/reviews/reconcile-gc-dedup-race/structure-r1.json` (reviewedSha `15f23c6`).
+Codex 요약: *"Do not ship B-1: **caller cancellation lets the new uncancellable commit escape same-key
+serialization**, so an expired upload can overwrite or resurrect state after a later successful operation."*
+**인간 triage 2026-07-13 — Accept.**
+
+| # | Finding (요지) | Severity | Decision | Reason | Action (B-1에서 실제로 한 것) |
+|---|---|---|---|---|---|
+| **S-1** | **무취소 커밋이 키별 락보다 오래 산다.** `KeyGuard`가 **호출자 퓨처**에 남아 있으므로 `upload_timeout`·disconnect가 그것을 **풀어버린다** → 같은 `bucket/key`의 재시도·delete가 락을 얻어 **먼저 끝나고**, 뒤늦게 깨어난 `spawn_blocking` rename이 **더 새로운 포인터를 덮어쓰거나 삭제된 키를 되살린다**(조용한 무결성 손상) | **high** (0.99) | **Accept** | 반박 불가. 픽스가 **핀**을 무취소 클로저로 옮기면서 **키 락은 옮기지 않았다** — 같은 논증(*"시작된 blocking 태스크는 abort 불가"*)이 **두 가드 모두에** 적용되는데 하나만 봤다 | **키 락을 커밋 클로저로 이전**(P3′). `PinGuard::commit_pointer(self, key: KeyGuard, …)`가 **두 가드를 함께 소유**하고, 클로저 안에서 **획득 역순(LIFO)으로 드롭**한다: ① 핀 ② 키 락 → 키 락이 풀리는 순간 그 put은 **이미 terminal**이다. 증인: **T-S1**(`commit_holds_key_lock_until_rename_lands`) |
+
+### 인간 결정 — S-2 (2026-07-13): **재시작-필요 복구 계약을 교환으로 수용하고 명문화**
+
+S-1의 봉인이 **새 degraded-path 행동**을 낳는다: 파일시스템 연산이 반환하지 않으면 그 `bucket/key`는
+**syscall이 반환하거나 프로세스가 재시작될 때까지 쓰기 불가**가 된다(무취소 클로저가 키 락을 쥔 채이므로).
+
+| 항목 | 내용 |
+|---|---|
+| **결정** | **교환을 수용한다 — 가드를 타임아웃으로 놓는 것은 금지**(S-1이 되살아난다) |
+| **근거** | **잠김(가용성) < 되살아나기(무결성)**. 멈춘 fs는 병리적 상황이고 그때 이 스토어는 이미 사실상 죽어 있다(`reconcile`도 같은 fs를 읽는다). 홈랩 **단일 replica + RWO PVC**라 blast radius가 **그 키 하나**다 |
+| **대가의 지불** | **침묵하지 않는다** — `KeyLocks::lock`이 `LOCK_WARN_AFTER`를 넘기면 `tracing::error!(bucket, key, …)`. **행동은 불변**(계속 기다린다 · 에러 반환 0 · 상계 0) |
+| **문서화** | §Preserved Contract의 **「⚠ 재시작-필요 복구 계약 (S-2)」** — **릴리스 게이트 제출물**. 잠김 **없이** 되살아나기를 막는 설계(키-바인드 펜싱 / 버전화된 포인터 발행)는 **F-30**으로 분리 |
+| **증인** | **T-S2**(`wedged_commit_keeps_key_unwritable_and_says_so_loudly`) — 쓰기 불가 · **경고 발화** · **행동 불변** · **delete가 이긴다**(부활 0)를 **한 테스트가 전부** 못박는다 |
+
+### Codex Structure Review — r2 (2026-07-13) — `needs-attention`, 1 finding (**신규 — 테스트 seam**)
+
+아티팩트: `docs/reviews/reconcile-gc-dedup-race/structure-r2.json` (reviewedSha `97b0ff1`, reviewedTree `9717d4c`).
+Codex 요약: *"Do not ship B-1 yet. **S-1 and S-2 are structurally resolved**, but **the committed seam cannot host
+B-2's required deterministic witnesses** without an unplanned visibility change or weaker tests."*
+`next_steps`: *"Add the test-only cross-module bridge to B-1. … **Keep `run_once_at`, protection state, and all
+seven hook fields private in production.**"*
+**인간 triage 2026-07-13 — Accept.**
+
+> **r2가 sound로 확인해 준 것(그대로 유지 — 건드리지 않는다)**: **S-1 해소**(키 락의 커밋 클로저 이전 · LIFO 드롭) ·
+> **S-2 해소**(재시작-필요 복구 계약의 명문화 + T-S2) · **fix model 전체** · **`Hooks` 7필드** · `settle()` ·
+> 코호트 · `landed` · 무덤 이름공간 · 복구 경로. ⇒ **`src/`의 프로덕션 행동은 한 글자도 바꾸지 않는다.**
+> **고칠 것은 테스트 seam 하나뿐이다.**
+
+| # | Finding (요지) | Severity | Decision | Reason | Action (이 개정에서 실제로 한 것) |
+|---|---|---|---|---|---|
+| **S-3** (신규) | **B-2의 결정적 테스트 seam이 형제 private 모듈로 쪼개져 있다.** `run_once_at`은 **`reconcile.rs` private**이고, B-2가 규정한 배리어 안무를 구성하는 데 필요한 **훅 7필드는 형제 모듈 `pins.rs` private**이다. `pins.rs`의 테스트는 `Hooks`를 지을 수 있지만 **주입형 시각의 reconciler를 부를 수 없고**, `reconcile.rs`의 테스트는 **그 반대**다. **B-2는 같은 결정적 증인 안에서 두 기능을 모두 요구한다**(§6: `run_once_at` + `Hooks{pre_grave, post_grave, …}`) → **프로덕션 가시성을 넓히거나 · 계획에 없던 다리를 놓거나 · 기록된 주입형-시각 안무를 약화시키지 않고는** B-1 위에 얹을 수 없다. **seam이 아직 싸게 바뀔 수 있는 지금 고쳐야 한다** | **high** (0.99) | **Accept** | **반박 불가.** 그리고 **계획서 자신이 그 다리를 이미 전제하고 있었다** — B-2 §6의 T-C1은 *"`run_once_at` → `gc_deleted == 1`"*이라 적고, 라이브니스 sanity는 *"**모든** `run_once_at` 호출을 `timeout`으로 감싼다"*고 규정한다. **호출부는 `pins.rs`인데 그 함수는 `reconcile.rs` private이다** — 계획은 **존재하지 않는 seam 위에 안무를 그려 놓았다.** B-1에서 잡지 않았다면 B-2 구현자가 **가시성을 넓히거나(봉인 파괴) 안무를 약화**시키는 것으로 풀었을 것이다 | **Codex 권고 그대로 — 다른 것은 아무것도 바꾸지 않았다.** ① `reconcile.rs`에 **`#[cfg(test)] pub(super) async fn run_once_at_for_test(store, now, gc_grace, settle_timeout)`** 추가 — `run_once_at`에 **위임만** 한다. `pub(super)` = **`store` 모듈 스코프** → `store::pins::tests`에서 보인다. ② **프로덕션 표면 무변화 증명**: `run_once_at`은 여전히 **모듈 private `async fn`**(`pub` 아님) · **`Hooks` 7필드 · `landed`/`live` 보호 상태는 `pins.rs` private 그대로** · 다리는 `#[cfg(test)]`라 **릴리스 빌드에 부재**(`cargo build --release` 통과 · 경고 0) · `reconcile.rs` diff = **+22 −0**(GC 삭제/격리 분기 **바이트 동일**). ③ **T-C1을 다리로 전환** — `run_once`(벽시계) + `gc_grace = 0` 우회를 **`run_once_at_for_test(&s, T0, GRACE=3600s, …)`**로 바꿔 tombstone 기준 시각과 reconcile의 `now`를 **같은 `T0`**로 묶었다(**결정성만 강화 · 단언 무변경**). ④ **다리 스모크 증인 신설** — `barrier_hooks_and_injected_clock_compose_in_one_witness`: **한 테스트가** `Hooks{during_collect}`를 짓고 **주입형 시각으로 두 패스**를 돌려(`T0` → 최초 관측 / `T0+GRACE+1s` → 회수, **sleep 0**) B-2의 안무가 **실제로 구성 가능함**을 기계로 증명한다. ⑤ **B-2 증분 문서에 §4.1 신설** — 각 증인이 **어느 모듈에 살고 어떤 다리를 쓰는지** 표로 못박았다(전 배리어 증인 → `pins.rs` + 다리 · `recover_graves` 가드/훅 불필요 테스트 → `reconcile.rs` + 직접 호출). **회귀 테스트는 여전히 RED · characterization 118 green · `allow(dead_code)` 5개 유지 · `ReconcileStats` 필드 추가 0 · 프로덕션 훅 0개 추가.** |
+
+**⚠ 이 개정이 하지 *않은* 것(경계)**: 프로덕션 가시성 확대 **0** · `Hooks` 필드 변경 **0** · `settle()`·코호트·
+`landed`·무덤 이름공간·복구 경로의 의미 변경 **0** · 관측 행동 플립 수 변화 **0** · `bugfix-lock.json` `scope[]`
+변경 **0**. **상시 승인(standing approval)의 경계 안**이다 — S-3은 **테스트 seam**이지 fix model이 아니다.
+
+### Codex Release Review — r1 (needs-attention · 4 findings) → r2 (3 해소) → r3: **clean — verdict approve, 0 findings**
+
+| ID | Finding | Severity | Decision | Action |
+|----|---------|----------|----------|--------|
+| R-1 | RED verify-record가 `symptomTokenPresent: true`라면서 그 `outputTail`에는 `DATA LOSS`도 테스트 ID도 없다(컴파일 노이즈뿐) — **감사 추적이 자기 판정을 뒷받침하지 못한다** | critical | **Accept** | 근본 원인은 **스크립트**였다: 실패 시 `out = stdout + stderr`로 stderr를 뒤에 붙여 tail이 빌드 로그로만 채워졌다(토큰 검사는 전체 출력에 대해 하므로 판정 자체는 옳았다). `gated-bugfix/scripts/bugfix-status.mjs` 수정 — ① stderr를 앞, 하네스 stdout을 뒤로 ② regression tail의 창을 symptomToken에 앵커링. selftest 통과, 레코드 **재생성**(손으로 고치지 않음) |
+| R-2 | 일반 `write_atomic`이 stage·rename·fsync를 **하나의 무취소 클로저**에 넣어, **잠긴 플립과 무관한 호출부**(`.bucket.json`·`.gc-pending.json`)의 취소 의미론까지 바꿨다 — **두 번째 관측 행동 플립** | high | **Accept** | `write_atomic`을 baseline async 체인으로 **축자 복원**(red.sha와 바이트 동일 확인). 무취소 stage/commit은 **`PinGuard::commit_pointer` 전용**으로 제한. 원자적 쓰기가 두 벌이 되지만 **정확성 > DRY** — 같은 온디스크 시퀀스임을 doc 표로 못박고 취소 의미론이 서로 반대인 이유를 명시. T-R2a 추가(blocking 스레드 1개 런타임을 점거해 구조적 Pending을 만든 뒤 취소 → 타깃 부재 단언, 타이밍 비의존). 뮤턴트 RED 실증 |
+| R-3 | verification.md가 명령 출력 대신 요약을 넣었고, 스크립트 hint를 옮겨 *"repro gone"*을 주장했으나 레코드의 `repro`는 `null`이다 | high | **Accept**(r2에서 재지적 — 20회 블록이 재구성물이었다) | 원문 출력으로 교체 + `repro` 주장 철회. 20회 반복은 **파이프라인이 캡처한 무삭제 원문**을 별도 아티팩트(`evidence-regression-20x.txt`, 250줄, 자체 집계 `exit 0: 20 / non-zero: 0`)로 커밋 |
+| R-4 | lock의 `scope[]`가 `CONTEXT.md`·`docs/adr/**`를 선언하지 않아 배리어 B4의 scope 증명이 **거짓**이었다(B-3 acceptance가 그 갱신을 **요구**했는데도) | high | **Accept** | scope에 명시 추가. 그 둘은 테스트도 slug-키 북키핑도 아니므로 면제되지 않는다 — 선언이 정답 |
+
+**r3 판정**: *"R-3 is resolved. The artifact contains 20 complete ordered runs of the locked command, each with the expected test PASS and EXIT 0, matching its 20/20 tally. … No material new issue was introduced."* — **approve, 0 findings.**

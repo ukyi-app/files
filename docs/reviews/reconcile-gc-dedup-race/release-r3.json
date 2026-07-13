@@ -1,0 +1,19 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "release",
+  "verdict": "approve",
+  "summary": "R-3 is resolved. The artifact contains 20 complete ordered runs of the locked command, each with the expected test PASS and EXIT 0, matching its 20/20 tally. Its capture SHA is a reachable documentation-only descendant of the locked green SHA with no build, source, dependency, or test changes. No material new issue was introduced.",
+  "planFile": "docs/bugfixes/reconcile-gc-dedup-race.md",
+  "planInDiff": null,
+  "reviewedFileCount": 29,
+  "target": "branch diff against main",
+  "reviewedSha": "11c019a1f28658da69effd6bf23152a92f2b0ab9",
+  "reviewedTree": "62413444b83823199679579791d1aeda0571c120",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 0,
+  "planFindingCount": 0,
+  "findings": [],
+  "next_steps": []
+}

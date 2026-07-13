@@ -19,16 +19,15 @@ impl Store {
     ) -> Result<ObjectMeta, AppError> {
         let meta_target = self.meta_for(bucket, key)?; // 검증 포함
         let sha = hex::encode(Sha256::digest(&bytes));
-        let _g = self.locks.lock(bucket, key).await; // 같은 키 쓰기 직렬화
+        // 같은 키 쓰기 직렬화(B8). 이 가드는 **커밋으로 이전된다** — 호출자 퓨처에 남기면
+        // 취소가 락을 풀고, 무취소 커밋이 나중에 깨어나 더 새로운 포인터를 덮어쓴다(S-1/T-S1).
+        let key_guard = self.locks.lock(bucket, key).await;
+        // 0) blob을 **보기 전에** 핀(무대기 — P1). 관측은 핀을 통해서만 한다.
+        let pin = self.pins.pin(&sha);
         // 1) 불변 blob. 있으면 무결성 검증 후 재사용; 손상(sha 불일치)이면 덮어써 치유.
         //    (발견 P3-2: 무검증 dedup은 손상 blob을 재사용·서빙)
-        let blob = self.blob_path(&sha);
-        let intact = matches!(
-            tokio::fs::read(&blob).await,
-            Ok(b) if hex::encode(Sha256::digest(&b)) == sha
-        );
-        if !intact {
-            atomic::write_atomic(&blob, &bytes)
+        if !pin.blob_intact(&self.layout).await {
+            atomic::write_atomic(&self.blob_path(&sha), &bytes)
                 .await
                 .map_err(AppError::Internal)?;
         }
@@ -40,7 +39,9 @@ impl Store {
             created_at: crate::clock::now_rfc3339(),
             uploaded_by: by.into(),
         };
-        atomic::write_atomic(&meta_target, &serde_json::to_vec(&meta).unwrap())
+        // 3) 커밋 — 핀 **과 키 락**을 소비하는 무취소 연산. 성공 = rename Ok = 착지 마킹 완료.
+        //    여기부터 락은 커밋 클로저의 것이다 → 취소해도 같은 키의 다음 writer는 계속 블록된다.
+        pin.commit_pointer(key_guard, meta_target, serde_json::to_vec(&meta).unwrap())
             .await
             .map_err(AppError::Internal)?;
         Ok(meta)
@@ -63,7 +64,9 @@ impl Store {
         E: std::fmt::Display,
     {
         let meta_target = self.meta_for(bucket, key)?; // 검증
-        let _g = self.locks.lock(bucket, key).await;
+        // 락은 **스트리밍 내내** 잡고 있다가 커밋으로 **이전**된다(S-1). 아래 스트리밍 구간은
+        // 여전히 **취소 가능**하다 — 취소되면 temp만 남기고 가드는 여기서 드롭된다(in-flight rename 0).
+        let key_guard = self.locks.lock(bucket, key).await;
 
         let objects_dir = self.layout.objects_dir();
         atomic::mkdir_p_durable(&objects_dir)
@@ -79,12 +82,10 @@ impl Store {
             }
         };
 
+        // sha가 확정된 즉시 핀(무대기). temp→blob rename 분기 전체가 핀 아래에 있다.
+        let pin = self.pins.pin(&sha);
         let blob = self.blob_path(&sha);
-        let existing_intact = matches!(
-            tokio::fs::read(&blob).await,
-            Ok(b) if hex::encode(Sha256::digest(&b)) == sha
-        );
-        if existing_intact {
+        if pin.blob_intact(&self.layout).await {
             let _ = tokio::fs::remove_file(&tmp).await;
         } else {
             // 없거나 손상 → temp를 blob으로 원자적 교체 + parent fsync로 치유/생성
@@ -103,7 +104,10 @@ impl Store {
             created_at: crate::clock::now_rfc3339(),
             uploaded_by: by.into(),
         };
-        atomic::write_atomic(&meta_target, &serde_json::to_vec(&meta).unwrap())
+        // 커밋 — 핀 **과 키 락**을 소비하는 무취소 연산. 스트리밍 **본문**은 취소 가능한 채로 남는다
+        // (upload_timeout 예산 불변). 무취소가 되는 것은 메타 커밋(수백 바이트)뿐이다 —
+        // 그 짧은 구간 동안만 락이 취소 불가하게 유지된다.
+        pin.commit_pointer(key_guard, meta_target, serde_json::to_vec(&meta).unwrap())
             .await
             .map_err(AppError::Internal)?;
         Ok(meta)

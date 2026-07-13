@@ -84,11 +84,12 @@ async fn concurrent_nested_puts_with_reconcile_loop_preserve_all() {
 
     // grace 1h reconcile 루프(진행 중 업로드와 공존해야)
     let rec = {
-        let root = root.clone();
+        let s2 = (*s).clone(); // ⚠ 같은 Store를 공유해야 한다 — Store::new 재구성 금지(D-3)
         let stop = stop.clone();
         tokio::spawn(async move {
             while !stop.load(Ordering::Relaxed) {
-                let _ = reconcile::run_once(&root, Duration::from_secs(3600)).await;
+                let _ = reconcile::run_once(&s2, Duration::from_secs(3600), Duration::from_secs(30))
+                    .await;
                 tokio::time::sleep(Duration::from_millis(3)).await;
             }
         })

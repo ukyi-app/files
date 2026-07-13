@@ -1,11 +1,11 @@
 ---
 id: B-3
 title: 위생·관측성·문서 — tracing · Drop poison 봉인 · ADR 0002 · 롤백 런북 · Graved 봉인 체크리스트 (행동 무변경)
-status: open
+status: done
 blocked-by: [B-2]
 plan: docs/bugfixes/reconcile-gc-dedup-race.md
 created: 2026-07-13
-closed:
+closed: 2026-07-13
 ---
 
 # B-3 — 위생 · 관측성 · 문서 (**행동 무변경**)
@@ -315,6 +315,9 @@ mv <DATA_DIR>/.objects/.gc-grave-<sha> <DATA_DIR>/.objects/<sha>
 - [ ] **⚠ 격리 분기 diff 0줄**(D-4) — **`git diff`로 증명.** `corrupt_blob_quarantined` **불변 초록**
 - [ ] tracing: `GC restored` / `grave recovered` 필드(`sha`) · **Drop poison 봉인**
       (`unwrap_or_else(into_inner)`) · `shrink_to_fit`
+- [ ] **`git grep -n 'allow(dead_code)' -- src/store/pins.rs` → 0건.** B-2가 남긴 **마지막 1건**
+      (`PassGuard::recovered`)을 **여기서 제거한다** — `recovered()`는 위 `"grave recovered"` 관측성이
+      **소비하는 순간** 살아난다. **그 attribute가 사라지는 것이 곧 관측성 배선의 증거다.**
 - [ ] **ADR 0002** + **CONTEXT.md Language**: **Pin / Landed / Grave / Cohort / Settle** (특히 *"landed = 커밋
       rename이 `Ok`를 반환했다"* — **유일한 보호 술어** — 와 *"cohort = 무덤 rename 시점에 살아있던 핀 집합"* —
       **대기 조건이지 보호가 아니다** — 와 *"settle = **유한·fail-CLOSED** 정산: landed 확정 → 즉시 복원 /
@@ -322,6 +325,21 @@ mv <DATA_DIR>/.objects/.gc-grave-<sha> <DATA_DIR>/.objects/<sha>
       **ADR에 P-4의 교훈을 남긴다**: *"무취소 커밋은 유실 창을 닫는 대신 **대기의 상계를 파괴한다**.
       `upload_timeout`은 **호출자 퓨처만** 자른다 — abort 불가능한 blocking 클로저를 기다리는 코드는 **반드시
       자기 벽시계 예산을 가져야 한다.**"*
+- [ ] **⚠ 재시작-필요 복구 계약(S-2)을 `CONTEXT.md`와 `ADR 0002`에 기록한다** — B-1이 **코드에** 못박은
+      계약(`PinGuard::commit_pointer` · `KeyGuard` doc)을 **설계 문서로 승격**한다. 세 항목을 **전부** 적는다:
+      ① **행동**: 커밋 클로저가 `PinGuard` **+** `KeyGuard`를 함께 소유하므로, **파일시스템 연산이 반환하지
+      않으면 그 `bucket/key`는 syscall이 반환하거나 프로세스가 재시작될 때까지 쓰기 불가**다(같은 키의 DELETE는
+      타임아웃이 없다) — **의도된 교환**이다.
+      ② **근거**: *"**잠김(가용성) < 되살아나기(무결성)**"* — 가드를 타임아웃으로 놓으면 detach된 낡은 커밋이
+      더 새로운 포인터를 덮어쓰거나 **성공적으로 삭제된 키를 되살린다**(조용한 데이터 손상 = S-1 부활).
+      멈춘 fs는 병리적 상황이고 그 경우 스토어는 이미 사실상 죽어 있으며(reconcile도 같은 fs를 읽는다),
+      단일 replica + RWO PVC라 blast radius는 **그 키 하나**다.
+      ③ **관측성**: `KeyLocks::lock`이 `LOCK_WARN_AFTER`(30s) 초과 시 `tracing::error!` — **행동 불변**
+      (여전히 무한정 대기 · 에러 반환 0 · FIFO 대기열 위치 보존 · `ReconcileStats` 필드 0개 추가).
+      증인 **T-S2**. **후속 F-30**(키-바인드 펜싱 / 버전화된 포인터 발행 → **잠김 없이** 되살아나기 차단)을
+      **함께 링크**한다. **ADR의 P-4 교훈 옆에 나란히 둔다** — 같은 뿌리(*"무취소 커밋은 대기의 상계를
+      파괴한다"*)의 **두 번째 귀결**이 바로 이 계약이다: `settle_timeout`이 **GC 쪽** 상계를 복원했듯,
+      **키 락 쪽에는 상계를 두지 않기로** 의도적으로 결정했고 그 대가를 여기에 적는다
 - [ ] `Store::new` **D-3 doc** ("데이터 루트 하나당 Store 하나 — 공유는 `Store::clone()`")
 - [ ] **롤백 런북**: 구 바이너리는 `.gc-grave-*`를 `Other`로 무시한다(절대 안 지운다) → 수동 복구는
       `mv .objects/.gc-grave-<sha> .objects/<sha>`. **무덤 개수 세는 원라이너 포함**
@@ -371,3 +389,16 @@ mv <DATA_DIR>/.objects/.gc-grave-<sha> <DATA_DIR>/.objects/<sha>
    `PinGuard::drop`이 abort하지 않고 핀을 제거하는지) 그 출력을 보고하라. **주장은 증거가 아니다.**
 6. `cargo clippy -D warnings` 출력 · `#[must_use]` 경고 0.
 7. **부분 해결 선언 문구**(§5)를 **그대로** 릴리스 게이트에 제출하라 — **숨기면 Blocker다.**
+
+## Result
+
+**커밋** (B-3). 행동 변화 0 — 회귀 **GREEN 20/20**, **134 passed**, `tests/` 무변경,
+격리 분기 프로덕션 diff **0줄**, `#[allow(dead_code)]` **0**.
+
+Drop-poison 봉인은 뮤턴트로 실증했다: 봉인을 제거하면 unwind 중 패닉이 겹쳐
+**SIGABRT**(signal 6)로 프로세스가 죽는다.
+
+**scope 밖 발견(고치지 않음, F-31로 파일링 권고)**: `src/capacity.rs`의
+`Reservation::drop`도 같은 poison 문제를 갖는다 — `inflight` 뮤텍스가 poison되면
+unwind 중 패닉 → abort이고, abort를 면해도 in-flight 바이트가 영구 누수되어
+`cap.reserve`가 **영영 507을 뱉는다**. B-3의 scope(`src/store/**`) 밖.

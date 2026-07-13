@@ -1,0 +1,21 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "structure",
+  "verdict": "approve",
+  "summary": "Ship S-3. The cfg(test), store-scoped bridge directly delegates to the still-private run_once_at, preserves all seven private Hooks fields, and the smoke witness proves both facilities compose in one pins.rs test. No production or RED-regression change was introduced.",
+  "planFile": "docs/bugfixes/reconcile-gc-dedup-race.md",
+  "planInDiff": null,
+  "reviewedFileCount": 18,
+  "target": "branch diff against main",
+  "reviewedSha": "63f7613193a92aece0cd134e5bc62d6b6c6f586c",
+  "reviewedTree": "16e5a494e3db215ddf6ba0226fa616ff30286c2c",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 0,
+  "planFindingCount": 0,
+  "findings": [],
+  "next_steps": [
+    "Proceed with B-2 using run_once_at_for_test for the planned pins.rs barrier witnesses."
+  ]
+}
