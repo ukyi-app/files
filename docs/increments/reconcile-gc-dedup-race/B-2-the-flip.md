@@ -1,11 +1,11 @@
 ---
 id: B-2
 title: the flip — GC 삭제 분기를 pre_grave → grave() → settle()로 교체 (유일한 관측 행동 플립)
-status: open
+status: done
 blocked-by: [B-1]
 plan: docs/bugfixes/reconcile-gc-dedup-race.md
 created: 2026-07-13
-closed:
+closed: 2026-07-13
 ---
 
 # B-2 — the flip (**유일한 관측 행동 플립**)
@@ -1094,3 +1094,36 @@ settle 깨어남 → `landed ∋ sha` → **Restore**.
    `notify_waiters()` 제거는 **T-P4b-1에서는 GREEN**이고 **T-P4b-2에서만 죽는다**.
 6. `"gc settle timed out"` 로그가 characterization + adversarial 스위트에서 **0건**임을 확인한 출력.
 7. `cargo clippy -D warnings` 출력.
+
+## Result
+
+**커밋** `284704c` (증분 시작 fixed point `63f7613`).
+
+**플립 착지**: 회귀 테스트 **RED → GREEN 20/20**(확률적 창이므로 20회 반복 확인).
+characterization **133 passed**, `tests/` **무변경**, `ReconcileStats` 필드 **0**,
+격리 분기 **프로덕션 무변경**(D-4 → F-25).
+
+**뮤턴트 킬 실증**(전부 실제 적용 → RED 확인 → 원복): 코호트 대기 제거 → **5 RED** ·
+fail-OPEN(타임아웃 시 reap) → **데이터 파괴 RED** · `notify_waiters()` 제거 → T-P4b-2만 RED ·
+`recover_graves` 삭제 → RED · `Graved` 파괴적 Drop → RED · 사전확인 뮤턴트 → RED ·
+`GRAVE_PREFIX` 드리프트 → **6 RED**. equivalent 뮤턴트 2건(`landed.clear()` 제거,
+M4′ 늦은 코호트 스냅샷)은 **정직하게 분류**.
+
+**컨덕터측 2축 리뷰**(fixed point `63f7613`) — Spec 축 clean(Minor 1), Standards 축
+hard violation 0. 4건 수용:
+1. **B7 계약이 reconcile 레벨에서 무방비였다**(가장 중요). 명세는 *"`io::Error`를 하나도
+   삼키지 않는다"*를 계약으로 선언했는데, T-B5③이 `settle()`을 **직접** 불러 그 자리에서만
+   `Err`를 단언했다. `reconcile.rs`의 `.settle().await?`를 `Err(_) => continue`로 바꾸는
+   뮤턴트가 **전 스위트를 통과했다**(`113 passed; 1 failed`로 실증 — 기존 증인 전부가 초록).
+   → reconcile 레벨 증인 T-B5③′ 추가(EIO 주입 → `run_once`가 raw `io::Error`를 반환 ∧
+   무덤 잔존 ∧ `remove_file` 미발생 ∧ 다음 패스가 복구). 그 뮤턴트를 **유일하게** 죽인다.
+2. **무덤 이름 단언이 동어반복이었다** — `layout::grave_name`을 경유하므로 `GRAVE_PREFIX`를
+   `.tomb-`로 바꿔도 전부 통과했다(ADR-0001의 *"테스트에서는 raw 리터럴을 유지하라 —
+   상수를 경유시키면 동어반복이 되어 회귀 감지력을 잃는다"* 위반). → raw 리터럴로 핀,
+   드리프트 뮤턴트가 6개 테스트를 RED로 만든다.
+3. 위험한 랑데부 반복구(도착 await · 3중 unwrap · pending 프로브)를 **의미 파라미터가 없는**
+   헬퍼로 factor — 차등 약화가 불가능하다. 증인별 단계 순서는 인라인 유지(그게 곧 명제다).
+4. `grave_name_of` Middle Man 제거.
+
+**정직한 잔여**: 격리(bit-rot) 분기의 동일 유실 경로는 **미해결**이다(F-25). 이 픽스는
+"포인터만 남고 blob 부재" 증상 클래스에 대해 **부분 해결**이다.
