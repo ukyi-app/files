@@ -1,0 +1,33 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "plan",
+  "verdict": "needs-attention",
+  "summary": "No-ship: P-5 remains acceptance-bypassable, although no separate new critical issue was found. The committed RED witness and verify-record are valid. Simpler alternative: retain the approved B+A design but make W8(l) enforce the wrapper’s exact AST instead of adding further hooks.",
+  "planFile": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+  "planInDiff": true,
+  "reviewedFileCount": 1,
+  "target": "working tree diff",
+  "reviewedSha": "bc049d983bb0457dc643fbdb9113aa78f17a31e3",
+  "reviewedTree": "94d63f4b94511d82e6f20dcd4d73b73cf31ebab4",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 1,
+  "planFindingCount": 1,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "Test-only configuration can conceal the broken production recovery path",
+      "body": "W11 runs through `PassGuard::begin` with `pre_recover_grave = Some`, whereas production always uses `None`. W8(l) only counts one snapshot and one `recover_graves_from` call and forbids selected loop/syscall tokens; it does not require that delegation to be unconditional or prohibit another call. An implementation can therefore use the correct helper under `cfg(test)` or when the hook is present, while delegating production to an unscanned raw helper. W8, W11, and characterization tests remain green, but production still aborts when a snapshotted grave vanishes—the exact P-5 failure.",
+      "file": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+      "line_start": 671,
+      "line_end": 674,
+      "confidence": 0.98,
+      "recommendation": "Make W8(l) parse or normalize the wrapper and require its complete body to be exactly an unconditional `Entry::snapshot` followed by the tail call to `recover_graves_from`. Reject conditional compilation, hook-presence branches, additional calls, and delegation. Mutation-check both `cfg(test)` and hook-presence variants.",
+      "isPlanFinding": true
+    }
+  ],
+  "next_steps": [
+    "Strengthen W8(l) as recommended, record the configuration-skew mutant, and repeat only the P-5 review."
+  ]
+}
