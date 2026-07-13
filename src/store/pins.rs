@@ -170,16 +170,23 @@ impl BlobPins {
 
     // ── 아래는 **private**이다(`pub(crate)` 아님) → `reconcile.rs`는 술어를 부를 수조차 없다. ──
 
+    /// `PassGuard::begin`에서만 호출된다(**Drop 경로가 아니다**) → poison은 **진짜 버그의 신호**이므로
+    /// `unwrap()`을 유지한다(삼키면 안 된다).
     fn enter_pass(&self) {
         let mut g = self.inner.lock().unwrap();
         g.pass_live = true;
         g.landed.clear();
+        g.landed.shrink_to_fit(); // 위생 — 패스 스코프 집합의 용량을 다음 패스로 끌고 가지 않는다
     }
 
+    /// ⚠ **`PassGuard::drop`에서만 호출된다 → Drop 경로다.** `unwrap()`을 쓰면 poison된 뮤텍스에서
+    /// **unwind 중 패닉 = abort**가 된다. poison 상태에서도 `pass_live`는 **반드시** 내려가야 한다 —
+    /// 그러지 않으면 이후의 모든 `landed` 삽입이 `pass_live` 가드에서 막혀 착지 흔적이 사라진다.
     fn exit_pass(&self) {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         g.pass_live = false;
         g.landed.clear();
+        g.landed.shrink_to_fit(); // 위생 — 행동 무변경
     }
 
     /// 무덤 rename **직후** 호출된다. 그 시점의 live id 집합 = **코호트**.
@@ -250,6 +257,15 @@ pub(crate) struct PinGuard {
 
 impl PinGuard {
     /// 관측은 핀을 통해서만(순서 = 타입). sha가 핀에서 나오므로 "핀은 A, 검사는 B" 뮤턴트도 표현 불가.
+    ///
+    /// # ⚠ 순서 제약 ① — `pin()` **<** `blob_intact()` (**타입이 강제한다**)
+    ///
+    /// 이것은 `PinGuard`의 **메서드**다 → **핀 없이는 blob을 관측할 방법이 아예 없다.** 이 순서가
+    /// 뒤집히면(= "먼저 보고 나중에 핀") 관측과 핀 사이에 **GC가 통째로 지나가는 창**이 열린다:
+    /// put이 blob을 보고(존재!) → GC가 무참조·만료로 판정해 회수 → put이 그제야 핀을 잡고 **바이트를
+    /// 재기록하지 않은 채** 커밋 포인터만 남긴다 → **포인터만 있고 blob 부재 = 영구 404**
+    /// (**이 픽스가 닫는 바로 그 버그다**). 시그니처를 `fn blob_intact(&BlobPins, sha)`로 되돌려
+    /// 자유 함수화하려는 유혹이 곧 봉인 해제다 — **하지 마라.**
     pub(crate) async fn blob_intact(&self, layout: &Layout) -> bool {
         let ok = matches!(
             tokio::fs::read(layout.blob_path(&self.sha)).await,
@@ -306,6 +322,21 @@ impl PinGuard {
     }
 
     /// 커밋의 **동기 본체**. 두 가드는 이것이 반환한 **뒤에** 드롭된다 — `?`가 가드를 조기 해제할 수 없다.
+    ///
+    /// # ⚠ 순서 제약 ② — `on_landed`는 rename의 `?` **뒤에서만** 불린다
+    ///
+    /// 강제 지점은 `atomic::Staged::commit_blocking`이다(그쪽 doc 참조). **앞으로 옮기면** 흔적의 의미가
+    /// **"착지했다" → "커밋을 *시도*했다"**로 바뀌고, `mkdir_p`/`create`/`write_all`/`sync_all`에서
+    /// 죽은 put — **ENOSPC가 정확히 그 넷에서 터진다** — 까지 sticky 흔적을 남긴다 → GC가 **포인터를
+    /// 만들 수 없었던 put** 때문에 blob을 보호한다 → **공간을 회수해야 하는 바로 그 상태에서 회수 불가**
+    /// (자기강화 ENOSPC 무한연기가 부활한다). **증인: T-C1.**
+    ///
+    /// # ⚠ 순서 제약 ③ — `notify_waiters()`가 `in_commit_post_landed` 훅보다 **먼저** 불린다
+    ///
+    /// 아래 클로저를 보라. 뒤집으면 **T-P4b-2의 load-bearing 지점이 사라진다**: 알림이 **나간 뒤에**
+    /// 훅이 park해야, **핀이 아직 살아 있는 채로**(코호트 미드레인) settlement가 `landed`로 깨어나는지를
+    /// 관측할 수 있다. 훅을 먼저 돌리면 그 증인은 "코호트가 드레인돼서 깨어난 것"과 **구별 불가**해지고
+    /// — 즉 **`landed` 즉시 깨움(P7 (a))을 지우는 뮤턴트가 GREEN으로 살아남는다**.
     fn commit_blocking(&self, target: &Path, bytes: &[u8]) -> std::io::Result<()> {
         let staged = atomic::stage_blocking(target, bytes)?; // ← 여기까지의 실패 = **흔적 0**
         self.pins.hooks.in_commit_pre_rename(&self.sha); // 동기 훅
@@ -329,9 +360,19 @@ impl PinGuard {
 
 impl Drop for PinGuard {
     /// **핀의 죽음 = 이 put의 종료 결과 확정**(P3). `landed`는 건드리지 않는다.
+    ///
+    /// ⚠ **poison 봉인.** 여기서 `.lock().unwrap()`을 쓰면 두 재앙이 겹친다:
+    /// ① 다른 스레드가 `Inner`를 쥔 채 패닉하면 뮤텍스가 poison되고, 그때 이 `Drop`이 **unwind 중에**
+    ///    패닉해 **abort**(프로세스 즉사)가 된다 — put 하나의 패닉이 **스토어 전체**를 죽인다.
+    /// ② 설령 abort를 면해도 **핀이 `live`에 영구히 남아** 그 sha의 코호트가 **영영 드레인되지 않는다**
+    ///    → `settle()`이 매 패스 `settle_timeout`을 태우고 `Deferred`로 빠진다(회수 영구 정지).
+    /// ⇒ **poison을 삼키고 핀을 반드시 제거한다**(`into_inner`). 데이터는 여전히 정합적이다 —
+    ///   `Inner`의 임계구역은 전부 `?`·await 없는 단순 삽입/삭제라 **중간 상태로 패닉할 수 없다**.
+    /// ※ 대칭 규칙: **Drop이 아닌 경로**(`pin()`·`landed()`·`cohort_at_grave()`·`await_settlement()`·
+    ///   `on_landed` 클로저)는 `unwrap()`을 **유지한다** — 거기서 poison은 **진짜 버그의 신호**다.
     fn drop(&mut self) {
         {
-            let mut g = self.pins.inner.lock().unwrap();
+            let mut g = self.pins.inner.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(ids) = g.live.get_mut(&self.sha) {
                 ids.remove(&self.id);
                 if ids.is_empty() {
@@ -357,6 +398,20 @@ pub(crate) struct PassGuard {
 
 impl PassGuard {
     /// **패스 순서의 유일한 소유자.** P5: 플래그를 든 가드를 **fallible op 이전에** 만든다.
+    ///
+    /// # ⚠ 순서 제약 ③ — `recover_graves` **<** `collect_referenced` (**load-bearing**)
+    ///
+    /// 이 두 호출의 순서는 **이 함수가 단독으로 소유**하며, **뒤집으면 데이터 손실이 부활한다**:
+    /// 지난 패스가 코호트 대기 중 크래시했다면 디스크는 **(B) 무덤 존재 · `<sha>` 부재**다. 그 창에
+    /// 커밋된 포인터는 **이미 VFS에 있다**. `collect_referenced`를 **먼저** 돌리면 그 포인터의 sha는
+    /// refs에 잡히지만 blob 이름은 아직 **무덤**이므로 이번 패스의 `.objects` 루프가 `<sha>`를
+    /// **보지 못한다** → 복구가 한 패스 밀리고, 그 사이 그 객체는 **404**다. 더 나쁘게는 순서를 뒤집은
+    /// 채 복구가 **패스 끝**으로 밀리면, 무참조로 오인된 무덤이 회수 후보가 되는 창이 열린다.
+    /// ⇒ **무덤을 정본으로 되돌린 *뒤에* 참조를 스냅샷한다.** (크래시 렌즈: §재시작/롤백)
+    ///
+    /// 순서 제약 ①(`pin` **<** `blob_intact`)과 ②(무덤 rename **<** `settle`의 판정)는 **타입이 강제**한다
+    /// — `blob_intact`는 `PinGuard`의 메서드이고, `settle`은 `Graved`의 메서드이며 `Graved`는
+    /// `grave()`의 rename이 `Ok`일 때만 태어난다. **이 ③만 사람이 지켜야 한다.**
     pub(crate) async fn begin(store: &Store, settle_timeout: Duration) -> std::io::Result<Self> {
         let _pass = store.pins().pass_lock.clone().lock_owned().await;
         let mut me = Self {
@@ -380,7 +435,10 @@ impl PassGuard {
         &self.refs
     }
 
-    #[allow(dead_code)] // B-3에서 제거 — 그때 관측성(tracing)이 이것을 소비한다
+    /// 이 패스의 `recover_graves`가 **정본으로 되돌린 무덤 수**(= 지난 패스가 흘린 것).
+    /// **`reconcile.rs`의 관측성이 소비한다** — `ReconcileStats`에는 **필드로 올리지 않는다**
+    /// (`tests/layout_tree.rs`의 전수 구조체 `assert_eq!` 3곳이 stats를 핀한다 → 필드 추가 = 두 번째
+    /// 관측 행동 플립). **관측성은 tracing으로만 낸다.** 카운터가 필요하면 후속 파이프라인(F-29)이다.
     pub(crate) fn recovered(&self) -> usize {
         self.recovered
     }
@@ -411,6 +469,7 @@ impl PassGuard {
 
 impl Drop for PassGuard {
     /// 디스크 무접촉 — 플래그와 패스-스코프 상태만 되돌린다.
+    /// **poison 봉인은 `exit_pass()` 안에 있다**(Drop 경로에서 `.unwrap()` 금지 — `PinGuard::drop` 참조).
     fn drop(&mut self) {
         self.pins.exit_pass();
     }
@@ -420,6 +479,45 @@ impl Drop for PassGuard {
 
 /// **무덤 rename 이후에만 존재할 수 있는 증거.** 파괴적 Drop 없음(흘리면 무덤 잔존 → 다음 패스 복구).
 /// 필드 전부 private · **`pins.rs` 밖에 생성자 없음** · `Default`/`Clone`/`Copy` 유도 금지.
+///
+/// # ⚠⚠ `Graved` 봉인 체크리스트 (10항목) — **리뷰가 반드시 확인한다**
+///
+/// **이 열 줄 중 하나라도 어기면 봉인이 풀린다.** ①~⑤: **사전확인 뮤턴트가 컴파일된다**(= GC가 판정
+/// 이전에 보호 상태를 훔쳐볼 수 있게 된다) · ⑥: **P-4(무한 대기)가 부활한다** · ⑦⑧⑨⑩: **증인이
+/// 아무것도 증명하지 못한다**(봉인을 제거해도 초록으로 남는 테스트는 **버그보다 위험하다**).
+///
+/// 1. **`Graved`의 필드는 전부 private.**
+/// 2. **`Default`/`Clone`/`Copy` 유도 금지.**
+/// 3. **`PassGuard::grave()` 밖에 생성자를 만들지 말 것.**
+/// 4. **`BlobPins`에 sha로 조회하는 공개 보호 술어를 추가하지 말 것**(`landed()`는 `pins.rs` private 유지 —
+///    공개하는 순간 `reconcile.rs`가 rename **이전에** 판정할 수 있게 된다).
+/// 5. **보호 판정 API는 `Graved::settle(self)` 하나로 유지**(판정만 따로 얻는 메서드 **금지**).
+/// 6. **`settle()`의 모든 대기 경로는 유한해야 한다** — `await_settlement`의 `timeout_at` **제거 금지** ·
+///    `settle_timeout`에 **기본값을 숨긴 오버로드 금지**(호출자가 **알고 정한다**) · 타임아웃 분기는
+///    **fail-CLOSED**(**복원**)여야 하며 **절대 `remove_file(grave)`로 가지 않는다** ·
+///    **`landed` 삽입의 `notify_waiters()` 제거 금지**(제거하면 착지한 객체가 코호트 잔여 멤버를 기다리며
+///    404가 된다 — **유실은 아니지만 가용성 회귀다**. **증인 = T-P4b-2**).
+/// 7. **배리어 테스트는 `stats.referenced`와 `post_grave` 관측으로 *삭제 분기 진입*을 자기검증한다** —
+///    이 두 단언을 **약화하지 말 것**(없애면 테스트가 **참조됨 분기로 새고도 초록**일 수 있다).
+/// 8. **배리어 테스트의 모든 park에는 「도착 신호 + 해제 신호」가 쌍으로 있다** — **spawn만 하고 다음
+///    단계로 넘어가는 지점을 만들지 말 것**(`tokio::spawn`은 **폴링을 보장하지 않는다** → 핀이 생기기도
+///    전에 GC가 **빈 코호트**를 캡처한다). **랑데부 규율의 체크리스트 표를 함께 갱신하지 않고는** 배리어
+///    테스트의 안무를 바꿀 수 없다(⚠ **T-C3는 이 함정에서 *조용히 GREEN*이 된다** — `gc_deleted == 1`이
+///    기대값과 같다).
+/// 9. **「개시 ≠ 완료」 — 비동기 연산의 *개시*를 *완료*로 쓰지 말 것.** `abort()` 뒤에는 반드시 그
+///    `JoinHandle`을 **유한 타임아웃으로 await하고 `JoinError::is_cancelled()`를 단언한다**
+///    (⚠ **`abort()`는 취소를 *스케줄만* 한다**) · **`timeout`의 `Err`는 안쪽 퓨처를 *드롭*할 뿐이다**
+///    (`&mut handle`로 프로브할 것 — 값으로 넘기면 태스크가 detach된다) · **완주를 await하는 모든 핸들은
+///    `JoinError`를 언랩한다**(버려진 핸들은 **패닉을 삼킨다**) · ⚠ **"의도적으로 await하지 않는 핸들"이라는
+///    예외는 *없다*** — **park된 태스크도 teardown에서 재개된다**(sender 드롭 = 재개) ⇒ **park sender를
+///    *명시적으로* 드롭하고, 핸들을 유한 타임아웃으로 await하며, `JoinError`와 안쪽 결과를 *둘 다* 언랩한다**
+///    (**단언을 전부 마친 뒤에** — 먼저 해제하면 시나리오가 사라진다).
+/// 10. **async 표현식은 반드시 `.await`한다.** `let _ = <async fn>(..)`는 **폴링되지 않은 퓨처를 드롭**할
+///     뿐 **아무 일도 하지 않는다**(`#[must_use]`도 `let _ =`가 **삼킨다**). **rename·복원 같은 파괴/복구
+///     연산은 await하고 *디스크 상태로* 확인한다.**
+///
+/// > **새 배리어 테스트를 쓸 때는 「개시 ≠ 완료」 클래스의 10개 함정 항목을 1:1로 대조하라** —
+/// > *"이전 라운드에서 safe 판정"은 근거가 아니다.* 전문: `docs/adr/0002-uncancellable-commit-landed-trace-grave-cohort-settlement.md`.
 #[must_use = "Graved를 흘리면 무덤이 남는다 — settle하라"]
 pub(crate) struct Graved<'p> {
     pass: &'p PassGuard,
@@ -667,6 +765,59 @@ mod tests {
             !Arc::ptr_eq(&a.pins().inner, &c.pins().inner),
             "같은 root의 Store::new 2개는 등록부가 갈라진다 — reconcile이 다른 Store의 put을 못 본다(D-3)"
         );
+    }
+
+    /// **Drop poison 봉인** — 다른 스레드가 등록부 뮤텍스를 **쥔 채 패닉**해도(= poison)
+    /// `PinGuard::drop`과 `PassGuard::drop`은 **패닉하지 않고** 자기 상태를 되돌린다.
+    ///
+    /// **왜 load-bearing인가**(두 재앙이 겹친다):
+    /// ① `Drop` 안의 `.lock().unwrap()`은 poison에서 패닉하고, 그것은 **unwind 중 패닉 = abort**다
+    ///    — put 하나의 패닉이 **프로세스 전체**를 죽인다.
+    /// ② abort를 면하더라도 **핀이 `live`에 영구히 남아** 그 sha의 코호트가 **영영 드레인되지 않는다**
+    ///    → `settle()`이 매 패스 `settle_timeout`을 태우고 `Deferred`로 빠진다(**회수 영구 정지**).
+    ///
+    /// **뮤턴트**(`unwrap_or_else(|e| e.into_inner())` → `.unwrap()`): `drop(pin)`이 패닉해 **RED**.
+    /// ※ `pin()`은 **Drop 경로가 아니므로** poison **이전에** 잡는다 — 그쪽의 `unwrap()`은 **의도된 것**이다
+    ///   (거기서 poison은 진짜 버그의 신호이고, 삼키면 안 된다).
+    #[tokio::test]
+    async fn drop_paths_survive_a_poisoned_registry_mutex() {
+        let (s, d) = store_with_objects().await;
+        let pass = PassGuard::begin(&s, SETTLE).await.unwrap();
+        let sha = "d".repeat(64);
+        let pin = s.pins().pin(&sha);
+
+        // 다른 스레드가 등록부를 **쥔 채** 죽는다 → 뮤텍스 poison
+        let pins = s.pins().clone();
+        let h = std::thread::spawn(move || {
+            let _g = pins.inner.lock().unwrap();
+            panic!("등록부를 쥔 채 죽는다");
+        });
+        assert!(h.join().is_err(), "그 스레드는 패닉해야 한다");
+        assert!(s.pins().inner.is_poisoned(), "뮤텍스가 poison돼야 시나리오가 성립한다");
+
+        // poison된 등록부를 읽는 유일한 방법(테스트 관측용) — 프로덕션 Drop 경로와 같은 규율.
+        let peek = |s: &Store| {
+            let g = s.pins().inner.lock().unwrap_or_else(|e| e.into_inner());
+            (
+                g.live.get(&sha).cloned().unwrap_or_default(),
+                g.pass_live,
+            )
+        };
+
+        // ① `PinGuard::drop` — abort하지 않고 **핀을 반드시 제거한다**
+        drop(pin);
+        assert!(
+            peek(&s).0.is_empty(),
+            "poison돼도 핀은 제거된다 — 아니면 코호트가 영영 드레인되지 않는다(회수 영구 정지)"
+        );
+
+        // ② `PassGuard::drop`(→ `exit_pass`) — abort하지 않고 패스 플래그를 내린다
+        drop(pass);
+        assert!(
+            !peek(&s).1,
+            "poison돼도 pass_live는 내려간다 — 아니면 이후 패스의 landed 삽입이 전부 막힌다"
+        );
+        drop(d);
     }
 
     /// 배리어가 **프로덕션 경로**를 지난다: put 하나가 `post_observe`(관측 후) ·

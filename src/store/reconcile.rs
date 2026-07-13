@@ -8,12 +8,27 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// reconciliation 1회 결과(관측성·테스트용).
+///
+/// # ⚠ 이 구조체에 **필드를 추가하지 마라**
+///
+/// `tests/layout_tree.rs:71,137,198`이 **구조체 전수 `assert_eq!`**로 stats를 핀한다 → 필드를 하나라도
+/// 늘리면 그 3개가 깨진다 = **두 번째 관측 행동 플립**(gated-bugfix 하드룰 10 위반).
+/// **무덤 복구 수(`recovered`) · 복원 수(`restored`) · 연기 수(`deferred`)는 전부 `tracing` 전용**이며
+/// 여기에 올라오지 않는다. 연기 카운터를 stats/metrics로 내보내고 싶으면 **stats 계약을 여는 별도
+/// 파이프라인**(**F-29**)이다.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct ReconcileStats {
+    /// 커밋 포인터가 참조하는 **서로 다른 sha 수**(이 패스의 스냅샷).
     pub referenced: usize,
+    /// **회수(reap)된 blob 수.** 무덤으로 옮겼다가 **복원**된 blob(`Settled::Restored`)과 **연기**된
+    /// blob(`Settled::Deferred`)은 **세지 않는다** — **회수하지 않았기 때문이다.**
+    /// (`Restored`/`Deferred`는 tombstone도 유지한다 — D-2: 다음 패스가 새 스냅샷으로 재판정한다.)
     pub gc_deleted: usize,
+    /// tombstone 대기 중인(= 무참조로 관측됐으나 아직 grace 내인) blob 수.
     pub gc_pending: usize,
+    /// grace를 넘긴 temp 잔재 삭제 수(`.tmp-` 접두 — 무덤은 여기 **절대** 들어오지 않는다).
     pub temps_deleted: usize,
+    /// 비트로트 격리 수(내용 sha ≠ 이름). ⚠ **이 분기는 핀·무덤을 거치지 않는다**(D-4 → **F-25**).
     pub quarantined: usize,
 }
 
@@ -107,7 +122,9 @@ pub(super) async fn recover_graves(layout: &Layout) -> std::io::Result<usize> {
         } else {
             atomic::rename_durable(&grave, &blob, &objects).await?;
             recovered += 1;
-            tracing::warn!(sha = %sha, "recovered grave from a previous pass");
+            // 관측성: 잔존 무덤을 **정본으로 되돌렸다**. 무덤이 남아 있었다는 것은 지난 패스가
+            // `?`로 탈출했거나 프로세스가 죽었다는 뜻이다 — fail-CLOSED가 **작동한** 증거다.
+            tracing::info!(sha = %sha, "grave recovered");
         }
     }
     Ok(recovered)
@@ -128,7 +145,18 @@ async fn run_once_at(
     }
 
     // 패스 등록 → 무덤 복구 → 참조 스냅샷. 이 셋의 순서는 PassGuard가 소유한다(P5).
+    // ⚠ `recover_graves`가 `collect_referenced`**보다 먼저** 돈다 — 뒤집으면 크래시 창에 커밋된
+    //    포인터가 refs에 안 잡힌다(근거: `PassGuard::begin`의 순서 제약 ③).
     let pass = PassGuard::begin(store, settle_timeout).await?;
+    // 관측성 — **`ReconcileStats`에는 필드를 추가하지 않는다**(tracing 전용). clean 트리에서는 0이므로
+    // 침묵한다. 0이 아니라는 것은 **지난 패스가 무덤을 흘렸다**(크래시/`?` 탈출)는 뜻이며, 이 패스가
+    // 그것을 정본으로 되돌렸다는 뜻이다 — 개별 sha는 `recover_graves`가 이미 로그했다.
+    if pass.recovered() > 0 {
+        tracing::info!(
+            recovered = pass.recovered(),
+            "graves recovered from a previous pass"
+        );
+    }
     let refs = pass.referenced();
     stats.referenced = refs.len();
 

@@ -70,6 +70,19 @@ impl Staged {
     /// rename이 **Ok를 반환한 직후에만** `on_landed`를 호출하고, 그 다음 parent를 fsync한다.
     /// `on_landed`는 **동기 클로저**다 — rename과 마킹 사이에 await/취소점이 존재할 수 없다.
     /// 이 시그니처는 이후 증분에서도 불변이다(훅은 호출자의 클로저 **안**에서 돈다).
+    ///
+    /// # ⚠ 순서 제약 (**load-bearing — 이 세 줄의 순서가 곧 픽스다**)
+    ///
+    /// `rename?` → `on_landed()` → `fsync_dir`. **`on_landed`를 `rename` 앞으로 옮기지 마라.**
+    ///
+    /// 이 콜백이 GC의 **유일한 보호 술어**(`landed`)를 심는다. 그 술어의 정의는 *"커밋 rename이 `Ok`를
+    /// 반환했다"*(= **커밋 포인터가 VFS에 실재한다**)이지 *"커밋을 **시도**했다"*가 **아니다**.
+    /// 앞으로 옮기면 stage 실패·rename `Err`로 죽은 put — **ENOSPC가 정확히 거기서 터진다** — 까지
+    /// 흔적을 남겨, **포인터를 만들 수 없었던 put**이 blob을 보호한다 → **디스크가 찼을 때 GC가 공간을
+    /// 회수하지 못하는 자기강화 루프**가 부활한다. **증인: T-C1**(`landed_trace_only_when_rename_returns_ok`).
+    ///
+    /// `fsync_dir`은 **내구성**이지 **가시성**이 아니다(POSIX rename이 `Ok`면 엔트리는 이미 VFS에 있다)
+    /// → 흔적은 fsync **이전에** 심는 것이 맞다. fsync가 실패해도 포인터는 **존재한다**.
     pub(crate) fn commit_blocking(self, on_landed: impl FnOnce()) -> std::io::Result<()> {
         std::fs::rename(&self.tmp, &self.target)?; // ← 실패하면 on_landed는 절대 안 불린다
         on_landed(); // ← 착지 확정. 흔적은 여기서만 생긴다.
