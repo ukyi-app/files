@@ -1,0 +1,34 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "plan",
+  "verdict": "needs-attention",
+  "summary": "No-ship: the RED witness is valid and P-1/P-2 are repaired, but P-3 remains unsealed. No new critical issue found. Simpler alternative: retain source-absence classification and rename/fsync separation, but enforce each call site directly instead of relying on the wrapper’s incomplete type barrier.",
+  "planFile": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+  "planInDiff": true,
+  "reviewedFileCount": 1,
+  "target": "working tree diff",
+  "reviewedSha": "793d474515a128b944a31686a06222c605f5b64e",
+  "reviewedTree": "300c27129c2ca37c4cd8a3582be0eb5797484809",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 1,
+  "planFindingCount": 1,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "P-3 acceptance can pass while recover_graves remains broken",
+      "body": "The plan claims W2 kills reverting `recover_graves` to raw `?`, but W2 only exercises `Entry::rename_durable_to` directly. An implementation can reconstruct the grave path from `entry.name()` and `Layout`, then retain the existing `atomic::rename_durable(...).await?`. This introduces none of W8's prohibited strings, while existing tests do not make a grave disappear between snapshot and rename. All stated acceptance checks can therefore pass even though a vanished grave still aborts the entire reconciliation pass.",
+      "file": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+      "line_start": 523,
+      "line_end": 523,
+      "confidence": 0.99,
+      "recommendation": "Add a call-site witness that removes a snapshotted grave before recovery and asserts the pass continues. Also make W8 reject direct `atomic::rename_durable` calls from `reconcile.rs`, or otherwise structurally prevent bypassing `Entry::rename_durable_to`.",
+      "isPlanFinding": true
+    }
+  ],
+  "next_steps": [
+    "Revise the P-3 acceptance evidence to cover actual recover_graves routing, then rerun the plan gate.",
+    "Keep the existing P-1 dangling-symlink and P-2 post-rename fsync design unchanged."
+  ]
+}
