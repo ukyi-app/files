@@ -1,0 +1,33 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "release",
+  "verdict": "needs-attention",
+  "summary": "Do not ship yet. R-1, R-2, and R-4 are resolved, and no new critical issue was found, but R-3 still lacks auditable 20-run verification evidence.",
+  "planFile": "docs/bugfixes/reconcile-gc-dedup-race.md",
+  "planInDiff": null,
+  "reviewedFileCount": 27,
+  "target": "branch diff against main",
+  "reviewedSha": "3570ac3bf307b8b89c86dd0fcf715009690217e0",
+  "reviewedTree": "2a6c26720f83a9bb5b6c5b4a4eb585ac244de609",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 1,
+  "planFindingCount": 0,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "Missing verification: repeated-race output is synthesized",
+      "body": "The plan requires the probabilistic regression to pass 20/20, but the block labeled as raw 20-run output contains hand-added run prefixes and literal `...` on every line. The script-owned record proves only one GREEN execution, so no committed artifact substantiates the claimed 20/20 repetition. This leaves a required release claim unauditable.",
+      "file": "docs/reviews/reconcile-gc-dedup-race/verification.md",
+      "line_start": 90,
+      "line_end": 116,
+      "confidence": 1,
+      "recommendation": "Commit unabridged output and exit status for every repeated run, captured by the pipeline rather than reconstructed, then refresh verification.md.",
+      "isPlanFinding": false
+    }
+  ],
+  "next_steps": [
+    "Replace the summarized 20-run block with committed raw evidence and repeat the scoped release review."
+  ]
+}

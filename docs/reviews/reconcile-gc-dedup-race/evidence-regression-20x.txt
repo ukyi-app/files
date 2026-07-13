@@ -1,0 +1,253 @@
+# Raw, unabridged output of the locked regressionCmd, repeated 20x at green.sha
+# Captured by the pipeline (not reconstructed). Each run shows the command, its
+# complete stdout+stderr, and its exit status.
+# green.sha: 3570ac3bf307b8b89c86dd0fcf715009690217e0
+# regressionCmd: cargo test --test regression_reconcile_gc_dedup_race
+# rationale: the witness reproduces a concurrency race, so a single GREEN is not
+#            sufficient; the plan requires 20/20.
+
+===== RUN 1/20 =====
+$ cargo test --test regression_reconcile_gc_dedup_race
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.27s
+     Running tests/regression_reconcile_gc_dedup_race.rs (target/debug/deps/regression_reconcile_gc_dedup_race-6a254c660e7a3e6b)
+
+running 1 test
+test dedup_put_during_reconcile_window_must_not_lose_blob ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.45s
+
+EXIT: 0
+
+===== RUN 2/20 =====
+$ cargo test --test regression_reconcile_gc_dedup_race
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+     Running tests/regression_reconcile_gc_dedup_race.rs (target/debug/deps/regression_reconcile_gc_dedup_race-6a254c660e7a3e6b)
+
+running 1 test
+test dedup_put_during_reconcile_window_must_not_lose_blob ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.44s
+
+EXIT: 0
+
+===== RUN 3/20 =====
+$ cargo test --test regression_reconcile_gc_dedup_race
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+     Running tests/regression_reconcile_gc_dedup_race.rs (target/debug/deps/regression_reconcile_gc_dedup_race-6a254c660e7a3e6b)
+
+running 1 test
+test dedup_put_during_reconcile_window_must_not_lose_blob ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.41s
+
+EXIT: 0
+
+===== RUN 4/20 =====
+$ cargo test --test regression_reconcile_gc_dedup_race
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+     Running tests/regression_reconcile_gc_dedup_race.rs (target/debug/deps/regression_reconcile_gc_dedup_race-6a254c660e7a3e6b)
+
+running 1 test
+test dedup_put_during_reconcile_window_must_not_lose_blob ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.43s
+
+EXIT: 0
+
+===== RUN 5/20 =====
+$ cargo test --test regression_reconcile_gc_dedup_race
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+     Running tests/regression_reconcile_gc_dedup_race.rs (target/debug/deps/regression_reconcile_gc_dedup_race-6a254c660e7a3e6b)
+
+running 1 test
+test dedup_put_during_reconcile_window_must_not_lose_blob ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.45s
+
+EXIT: 0
+
+===== RUN 6/20 =====
+$ cargo test --test regression_reconcile_gc_dedup_race
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+     Running tests/regression_reconcile_gc_dedup_race.rs (target/debug/deps/regression_reconcile_gc_dedup_race-6a254c660e7a3e6b)
+
+running 1 test
+test dedup_put_during_reconcile_window_must_not_lose_blob ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.50s
+
+EXIT: 0
+
+===== RUN 7/20 =====
+$ cargo test --test regression_reconcile_gc_dedup_race
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+     Running tests/regression_reconcile_gc_dedup_race.rs (target/debug/deps/regression_reconcile_gc_dedup_race-6a254c660e7a3e6b)
+
+running 1 test
+test dedup_put_during_reconcile_window_must_not_lose_blob ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.45s
+
+EXIT: 0
+
+===== RUN 8/20 =====
+$ cargo test --test regression_reconcile_gc_dedup_race
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+     Running tests/regression_reconcile_gc_dedup_race.rs (target/debug/deps/regression_reconcile_gc_dedup_race-6a254c660e7a3e6b)
+
+running 1 test
+test dedup_put_during_reconcile_window_must_not_lose_blob ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.49s
+
+EXIT: 0
+
+===== RUN 9/20 =====
+$ cargo test --test regression_reconcile_gc_dedup_race
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running tests/regression_reconcile_gc_dedup_race.rs (target/debug/deps/regression_reconcile_gc_dedup_race-6a254c660e7a3e6b)
+
+running 1 test
+test dedup_put_during_reconcile_window_must_not_lose_blob ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.46s
+
+EXIT: 0
+
+===== RUN 10/20 =====
+$ cargo test --test regression_reconcile_gc_dedup_race
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+     Running tests/regression_reconcile_gc_dedup_race.rs (target/debug/deps/regression_reconcile_gc_dedup_race-6a254c660e7a3e6b)
+
+running 1 test
+test dedup_put_during_reconcile_window_must_not_lose_blob ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.48s
+
+EXIT: 0
+
+===== RUN 11/20 =====
+$ cargo test --test regression_reconcile_gc_dedup_race
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+     Running tests/regression_reconcile_gc_dedup_race.rs (target/debug/deps/regression_reconcile_gc_dedup_race-6a254c660e7a3e6b)
+
+running 1 test
+test dedup_put_during_reconcile_window_must_not_lose_blob ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.46s
+
+EXIT: 0
+
+===== RUN 12/20 =====
+$ cargo test --test regression_reconcile_gc_dedup_race
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+     Running tests/regression_reconcile_gc_dedup_race.rs (target/debug/deps/regression_reconcile_gc_dedup_race-6a254c660e7a3e6b)
+
+running 1 test
+test dedup_put_during_reconcile_window_must_not_lose_blob ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.45s
+
+EXIT: 0
+
+===== RUN 13/20 =====
+$ cargo test --test regression_reconcile_gc_dedup_race
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+     Running tests/regression_reconcile_gc_dedup_race.rs (target/debug/deps/regression_reconcile_gc_dedup_race-6a254c660e7a3e6b)
+
+running 1 test
+test dedup_put_during_reconcile_window_must_not_lose_blob ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.46s
+
+EXIT: 0
+
+===== RUN 14/20 =====
+$ cargo test --test regression_reconcile_gc_dedup_race
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+     Running tests/regression_reconcile_gc_dedup_race.rs (target/debug/deps/regression_reconcile_gc_dedup_race-6a254c660e7a3e6b)
+
+running 1 test
+test dedup_put_during_reconcile_window_must_not_lose_blob ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.46s
+
+EXIT: 0
+
+===== RUN 15/20 =====
+$ cargo test --test regression_reconcile_gc_dedup_race
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+     Running tests/regression_reconcile_gc_dedup_race.rs (target/debug/deps/regression_reconcile_gc_dedup_race-6a254c660e7a3e6b)
+
+running 1 test
+test dedup_put_during_reconcile_window_must_not_lose_blob ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.47s
+
+EXIT: 0
+
+===== RUN 16/20 =====
+$ cargo test --test regression_reconcile_gc_dedup_race
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+     Running tests/regression_reconcile_gc_dedup_race.rs (target/debug/deps/regression_reconcile_gc_dedup_race-6a254c660e7a3e6b)
+
+running 1 test
+test dedup_put_during_reconcile_window_must_not_lose_blob ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.44s
+
+EXIT: 0
+
+===== RUN 17/20 =====
+$ cargo test --test regression_reconcile_gc_dedup_race
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running tests/regression_reconcile_gc_dedup_race.rs (target/debug/deps/regression_reconcile_gc_dedup_race-6a254c660e7a3e6b)
+
+running 1 test
+test dedup_put_during_reconcile_window_must_not_lose_blob ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.46s
+
+EXIT: 0
+
+===== RUN 18/20 =====
+$ cargo test --test regression_reconcile_gc_dedup_race
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+     Running tests/regression_reconcile_gc_dedup_race.rs (target/debug/deps/regression_reconcile_gc_dedup_race-6a254c660e7a3e6b)
+
+running 1 test
+test dedup_put_during_reconcile_window_must_not_lose_blob ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.45s
+
+EXIT: 0
+
+===== RUN 19/20 =====
+$ cargo test --test regression_reconcile_gc_dedup_race
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+     Running tests/regression_reconcile_gc_dedup_race.rs (target/debug/deps/regression_reconcile_gc_dedup_race-6a254c660e7a3e6b)
+
+running 1 test
+test dedup_put_during_reconcile_window_must_not_lose_blob ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.44s
+
+EXIT: 0
+
+===== RUN 20/20 =====
+$ cargo test --test regression_reconcile_gc_dedup_race
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+     Running tests/regression_reconcile_gc_dedup_race.rs (target/debug/deps/regression_reconcile_gc_dedup_race-6a254c660e7a3e6b)
+
+running 1 test
+test dedup_put_during_reconcile_window_must_not_lose_blob ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.45s
+
+EXIT: 0
+
+===== SUMMARY =====
+runs: 20
+exit 0: 20
+non-zero exits: 0
+verdict: 20/20 GREEN

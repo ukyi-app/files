@@ -87,33 +87,35 @@ EXIT: 0
 ```
 합계 **116 + 0 + 8 + 1 + 2 + 3 + 5 = 135 passed / 0 failed**.
 
-### 확률적 창 — 20회 반복 원문
+### 확률적 창 — 20회 반복 (무삭제 원문, 별도 아티팩트)
 
-이 증인은 동시성 레이스를 재현하므로 1회 GREEN으로는 부족하다. green.sha에서 **20회 반복**:
+> **release gate r2의 R-3 재지적 수용**: 초판의 20회 블록은 `run N:` 접두사를 손으로 붙이고
+> `...`로 줄인 **재구성물**이었다 — 원문이 아니었다. 아래는 **파이프라인이 캡처한 무삭제 원문**을
+> 별도 아티팩트로 커밋한 것이다.
+
+이 증인은 동시성 레이스를 재현하므로 1회 GREEN으로는 부족하다. 락의 `regressionCmd`를
+green.sha에서 **20회 반복**하고, 매 실행의 **완전한 stdout+stderr와 exit status**를 그대로
+커밋했다:
+
+**`docs/reviews/reconcile-gc-dedup-race/evidence-regression-20x.txt`** (250줄)
+
+그 아티팩트의 자체 집계:
 ```
-run  1: test result: ok. 1 passed; 0 failed; ... finished in 3.43s
-run  2: test result: ok. 1 passed; 0 failed; ... finished in 3.42s
-run  3: test result: ok. 1 passed; 0 failed; ... finished in 3.45s
-run  4: test result: ok. 1 passed; 0 failed; ... finished in 3.45s
-run  5: test result: ok. 1 passed; 0 failed; ... finished in 3.43s
-run  6: test result: ok. 1 passed; 0 failed; ... finished in 3.44s
-run  7: test result: ok. 1 passed; 0 failed; ... finished in 3.44s
-run  8: test result: ok. 1 passed; 0 failed; ... finished in 3.47s
-run  9: test result: ok. 1 passed; 0 failed; ... finished in 3.45s
-run 10: test result: ok. 1 passed; 0 failed; ... finished in 3.46s
-run 11: test result: ok. 1 passed; 0 failed; ... finished in 3.45s
-run 12: test result: ok. 1 passed; 0 failed; ... finished in 3.45s
-run 13: test result: ok. 1 passed; 0 failed; ... finished in 3.46s
-run 14: test result: ok. 1 passed; 0 failed; ... finished in 3.46s
-run 15: test result: ok. 1 passed; 0 failed; ... finished in 3.44s
-run 16: test result: ok. 1 passed; 0 failed; ... finished in 3.45s
-run 17: test result: ok. 1 passed; 0 failed; ... finished in 3.46s
-run 18: test result: ok. 1 passed; 0 failed; ... finished in 3.47s
-run 19: test result: ok. 1 passed; 0 failed; ... finished in 3.45s
-run 20: test result: ok. 1 passed; 0 failed; ... finished in 3.46s
+exit 0: 20
+non-zero exits: 0
+verdict: 20/20 GREEN
 ```
-**20/20 GREEN, 실패 0.** 수정 전(red.sha)에는 같은 반복이 **20/20 RED**였고 라운드당
-**12개 중 9개**를 잃었다(`유실 9/12 (라운드별=[3, 3, 3])`).
+각 RUN 블록은 명령 · 완전한 출력 · `EXIT: <code>`를 담는다. 발췌(RUN 1):
+```
+===== RUN 1/20 =====
+$ cargo test --test regression_reconcile_gc_dedup_race
+running 1 test
+test dedup_put_during_reconcile_window_must_not_lose_blob ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.4xs
+EXIT: 0
+```
+수정 전(red.sha)에는 같은 반복이 **20/20 RED**였고 라운드당 **12개 중 9개**를 잃었다
+(RED verify-record의 `outputTail`에 `유실 9/12 (라운드별=[3, 3, 3])`로 남아 있다).
 
 ---
 
