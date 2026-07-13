@@ -2742,4 +2742,15 @@ mod tests {
         );
         assert!(grave_names(&root).await.is_empty(), "무덤 잔재 0");
     }
+
+    /// **F-14 회귀 증인**(`reconcile-vanished-entry-aborts-pass`) — `src/store/pins/tests/vanished_entry_regression.rs`.
+    ///
+    /// **`tests`의 자식**이다(형제가 아니다). 두 벽을 **동시에** 넘어야 하기 때문이다:
+    /// ① `Hooks`의 **7개 필드는 `pins` private**이므로 훅을 리터럴로 짓는 증인은 `pins`의 **자손**이어야
+    ///    한다(그리고 `Hooks`는 **늘리지 않는다** — 위 `Hooks` 정의의 못).
+    /// ② 위 **랑데부 프리미티브**(`arrived`/`finish_pass`/`probe_still_waiting`/`plant_orphan_blob`/
+    ///    `seed_expired_tombstones`…)는 **이 모듈 private**이므로 **형제 모듈은 재사용할 수 없다** →
+    ///    형제로 두면 *"위험한 반복구는 여기 한 곳에만 산다"*가 깨진다(복사본이 생긴다).
+    /// **자식**이면 ①②를 둘 다 만족하며 기존 테스트의 가시성을 **한 글자도 넓히지 않는다**.
+    mod vanished_entry_regression;
 }
