@@ -1,11 +1,11 @@
 ---
 id: B-3
 title: 위생·관측성·문서 — tracing · Drop poison 봉인 · ADR 0002 · 롤백 런북 · Graved 봉인 체크리스트 (행동 무변경)
-status: open
+status: done
 blocked-by: [B-2]
 plan: docs/bugfixes/reconcile-gc-dedup-race.md
 created: 2026-07-13
-closed:
+closed: 2026-07-13
 ---
 
 # B-3 — 위생 · 관측성 · 문서 (**행동 무변경**)
@@ -389,3 +389,16 @@ mv <DATA_DIR>/.objects/.gc-grave-<sha> <DATA_DIR>/.objects/<sha>
    `PinGuard::drop`이 abort하지 않고 핀을 제거하는지) 그 출력을 보고하라. **주장은 증거가 아니다.**
 6. `cargo clippy -D warnings` 출력 · `#[must_use]` 경고 0.
 7. **부분 해결 선언 문구**(§5)를 **그대로** 릴리스 게이트에 제출하라 — **숨기면 Blocker다.**
+
+## Result
+
+**커밋** (B-3). 행동 변화 0 — 회귀 **GREEN 20/20**, **134 passed**, `tests/` 무변경,
+격리 분기 프로덕션 diff **0줄**, `#[allow(dead_code)]` **0**.
+
+Drop-poison 봉인은 뮤턴트로 실증했다: 봉인을 제거하면 unwind 중 패닉이 겹쳐
+**SIGABRT**(signal 6)로 프로세스가 죽는다.
+
+**scope 밖 발견(고치지 않음, F-31로 파일링 권고)**: `src/capacity.rs`의
+`Reservation::drop`도 같은 poison 문제를 갖는다 — `inflight` 뮤텍스가 poison되면
+unwind 중 패닉 → abort이고, abort를 면해도 in-flight 바이트가 영구 누수되어
+`cap.reserve`가 **영영 507을 뱉는다**. B-3의 scope(`src/store/**`) 밖.
