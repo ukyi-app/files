@@ -278,6 +278,40 @@ T-P4b가 빠졌다. **`referenced`와 `graved`가 그 둘을 가른다.**
 **배리어 테스트는 `src/store/{reconcile,pins}.rs`의 in-module `#[cfg(test)] mod tests`에 산다**
 (통합 테스트 크레이트에서는 crate-private 훅이 안 보인다).
 
+### 4.1 ⚠ **어느 모듈에 사는가 · 어떤 다리를 쓰는가** (S-3 — 벽에 다시 부딪히지 마라)
+
+배리어 증인은 **두 기능을 같은 테스트 안에서** 요구하는데, 그 둘은 **형제 private 모듈로 갈라져 있다**:
+
+| 필요한 것 | 어디 있나 | 누가 쓸 수 있나 |
+|---|---|---|
+| **`Hooks` 구성**(`Hooks { pre_grave: …, post_grave: …, .. }`) | `pins.rs` — **7개 필드가 전부 private** | **`pins.rs`와 그 `mod tests`뿐.** 구조체 리터럴은 필드 가시성을 따른다 → **다른 모듈에서는 지을 수 없다** |
+| **주입형 시각 reconciler**(`run_once_at(&s, now, …)`) | `reconcile.rs` — **모듈 private `async fn`** | `reconcile.rs`와 그 `mod tests`뿐 |
+
+⇒ **순진하게 쓰면 어느 모듈에서도 B-2의 증인을 짤 수 없다.** `pins.rs`의 테스트는 훅을 짓고도 **시계를 주입할 수
+없고**, `reconcile.rs`의 테스트는 **훅을 지을 수 없다**. B-1의 structure gate r2가 이것을 **S-3(high)**으로 잡았다.
+
+**해법(B-1에서 이미 놓았다 — 새로 만들지 마라)**: `reconcile.rs`의 **`#[cfg(test)] pub(super) async fn
+run_once_at_for_test(store, now, gc_grace, settle_timeout)`** — `run_once_at`에 **위임만** 하는 다리다.
+`pub(super)` = **`store` 모듈 스코프** → `store::pins::tests`에서 보인다. **프로덕션 표면은 넓어지지 않는다**:
+`run_once_at`은 여전히 모듈 private이고, 보호 상태(`landed`/`live`)와 **`Hooks`의 7개 필드도 그대로 private**이며,
+다리 자체가 `#[cfg(test)]`라 **릴리스 빌드에 존재하지 않는다**.
+
+**배치 규칙 (예외 없음)**:
+
+| 증인 | 사는 모듈 | reconcile 호출 |
+|---|---|---|
+| **전 배리어 증인** — T-B1 · T-B2 · T-B4 · T-C1 · T-C2 · T-C3 · T-P4a · T-P4b-1 · T-P4b-2 · T-B5 ①~④ | **`src/store/pins.rs`의 `mod tests`** | **`reconcile::run_once_at_for_test(…)`** (다리) |
+| `recover_graves` 가드 — T-Q2 · T-Q3, 그리고 훅이 **필요 없는** GC 특성화 테스트 | `src/store/reconcile.rs`의 `mod tests` | `run_once_at(…)` **직접**(같은 모듈이므로 다리 불필요) |
+
+**왜 배리어 증인은 전부 `pins.rs`인가**: §4의 자기검증 규율이 **모든** 배리어 테스트에 `post_grave` 훅 관측
+(`graved == vec![X_sha]`)을 **의무화**했다 → **훅 없는 배리어 증인은 존재하지 않는다** → 전부 `pins.rs`에 살아야
+하고, 따라서 **전부 다리를 통해 시각을 주입한다**. (`Store::with_hooks` / `with_hooks_and_lock_warn`도
+`#[cfg(test)]`이며 `pins::Hooks`를 받으므로 같은 모듈에서 쓰는 것이 자연스럽다.)
+
+**이미 다리를 쓰고 있는 것(참고 구현)**: `pins.rs`의 **T-C1**(`failed_commit_does_not_protect_blob_from_gc` — 훅은
+없지만 §6이 규정한 `run_once_at` 주입형 판정을 쓴다)과 **`barrier_hooks_and_injected_clock_compose_in_one_witness`**
+(다리 스모크 — 훅 + 주입형 시각이 **한 테스트 안에서** 동작함을 증명한다). **새 증인은 이 둘을 본떠라.**
+
 ---
 
 ## 5. ⚠⚠ §랑데부 규율 — **개시(initiation)는 완료(completion)가 아니다**

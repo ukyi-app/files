@@ -226,6 +226,28 @@ async fn run_once_at(
     Ok(stats)
 }
 
+/// **테스트 전용 다리(S-3).** B-2의 배리어 증인은 **두 기능을 같은 테스트 안에서** 요구한다:
+/// ① `Hooks` 구성 — 7개 필드가 **`pins.rs` private**이라 그 모듈(과 그 `mod tests`) 안에서만
+/// 리터럴로 지을 수 있다 · ② **주입형 시각**의 reconciler — `run_once_at`은 **이 모듈 private**이다.
+/// 이 둘이 형제 private 모듈로 갈라져 있으면 `pins.rs`의 증인은 훅을 짓고도 시계를 주입할 수 없고,
+/// `reconcile.rs`의 증인은 그 반대다 → B-2의 안무(§6: `run_once_at` + `Hooks{pre_grave, post_grave, …}`)를
+/// **구성할 방법이 없다**. 이 다리가 그 벽을 **`store` 모듈 안에서만** 뚫는다.
+///
+/// **프로덕션 표면은 한 글자도 넓어지지 않는다**:
+/// * `run_once_at`은 여전히 **이 모듈 private**(`pub` 아님) — 밖에서 부를 수 없다.
+/// * 보호 상태(`landed`/`live`)와 `Hooks`의 **7개 필드는 `pins.rs` private 그대로**다.
+/// * 이 래퍼는 `#[cfg(test)]` → **릴리스 빌드에 존재하지 않는다.**
+/// * 위임 외에 **아무 일도 하지 않는다** — 주입형-시각 안무를 약화시키지 않는다.
+#[cfg(test)]
+pub(super) async fn run_once_at_for_test(
+    store: &Store,
+    now: SystemTime,
+    gc_grace: Duration,
+    settle_timeout: Duration,
+) -> std::io::Result<ReconcileStats> {
+    run_once_at(store, now, gc_grace, settle_timeout).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

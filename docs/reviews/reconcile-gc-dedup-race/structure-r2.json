@@ -1,15 +1,15 @@
 {
-  "ok": false,
-  "status": "stale-branch-review",
+  "ok": true,
+  "status": "ok",
   "kind": "structure",
   "verdict": "needs-attention",
-  "summary": "Do not ship B-1 yet: S-1’s overwrite/resurrection race is closed, but the repair introduces an unbounded per-key liveness failure without an accepted recovery contract.",
+  "summary": "Do not ship B-1 yet. S-1 and S-2 are structurally resolved, but the committed seam cannot host B-2’s required deterministic witnesses without an unplanned visibility change or weaker tests.",
   "planFile": "docs/bugfixes/reconcile-gc-dedup-race.md",
   "planInDiff": null,
-  "reviewedFileCount": 16,
+  "reviewedFileCount": 18,
   "target": "branch diff against main",
-  "reviewedSha": "222765c8eae3ea3cf5d6d1797e674d7397dec1e6",
-  "reviewedTree": "03e68746e16aa7b8fdf685d557a2e0aaf5d3ff05",
+  "reviewedSha": "97b0ff16dfee1256bfa375b706237adc73647bb9",
+  "reviewedTree": "9717d4cfb4ae91cfa058e165b4eee6d48bc5e597",
   "codexStatus": 0,
   "parseError": null,
   "findingCount": 1,
@@ -17,19 +17,19 @@
   "findings": [
     {
       "severity": "high",
-      "title": "Uncancellable KeyGuard ownership can wedge a key indefinitely",
-      "body": "`commit_pointer` transfers `KeyGuard` into an abort-resistant blocking closure and releases it only after `commit_blocking` returns. Under the plan’s explicitly modeled non-returning filesystem operation, an upload timeout only drops the caller future; the detached closure retains the key until the syscall returns or the process is killed. Same-key DELETE has no timeout (`src/store/objects.rs:158`), while PUT retries reserve global capacity before waiting (`src/http/internal/files.rs:82-92`), potentially spreading the outage. T-S1 confirms blocking only until its manual release and does not cover this degraded path. This is a new availability tradeoff introduced by the S-1 repair.",
-      "file": "src/store/pins.rs",
-      "line_start": 275,
-      "line_end": 282,
-      "confidence": 0.97,
-      "recommendation": "Do not simply release the guard on timeout, which would reopen S-1. Before B-2, either implement key-bound fencing/versioned pointer publication so newer operations can supersede a detached commit without stale resurrection, or explicitly escalate and accept the restart-required recovery contract with observability and operational limits. Add a deterministic parked-commit test proving the chosen bounded behavior.",
+      "title": "B-2’s deterministic test seam is split across private sibling modules",
+      "body": "`run_once_at` is private to `reconcile.rs`, while the hook fields needed to construct B-2’s prescribed barrier choreography are private to sibling module `pins.rs`. Tests under `pins.rs` can construct `Hooks` but cannot call the injected-time reconciler; tests under `reconcile.rs` have the inverse limitation. B-2 repeatedly requires both facilities in the same deterministic witnesses, so it cannot compose onto B-1 as planned without widening production visibility, adding an unplanned bridge, or weakening the recorded injected-time choreography. This should be corrected while the seam is still cheap to change.",
+      "file": "src/store/reconcile.rs",
+      "line_start": 116,
+      "line_end": 122,
+      "confidence": 0.99,
+      "recommendation": "Add an explicitly test-only injected-time reconcile wrapper with visibility limited to `store`, callable from `pins.rs` tests. Keep `run_once_at`, protection state, and all seven hook fields private in production.",
       "isPlanFinding": false
     }
   ],
   "next_steps": [
-    "Escalate this availability tradeoff because it exceeds the standing approval for test-only choreography changes.",
-    "Define and pin the same-key recovery contract before building B-2 on this commit seam."
-  ],
-  "hint": "Branch review only sees committed content (base...HEAD), but the working tree has uncommitted changes that were NOT reviewed. Commit (or stash) them, then re-run — otherwise unreviewed edits pass the gate. If the dirt is a prior gate's docs/reviews/*/<gate>-r*.json artifact, COMMIT it (don't stash): the conductors' artifact-derived done checks read the committed file."
+    "Add the test-only cross-module bridge to B-1.",
+    "Confirm B-2’s planned barrier tests can access both hook construction and injected time without expanding production APIs.",
+    "Repeat the structure review; do not re-run machine-owned tests in this gate."
+  ]
 }

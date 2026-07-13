@@ -2705,3 +2705,53 @@ for P-7 beyond the implemented bounded await.** Open question: none."*
 | **D-4** | **최종안의 "B-3 = 격리 분기(F4) 봉인"을 제외한다.** B-3은 **위생·관측성·문서만**. 격리 분기는 **현행 그대로 보존**(`rename(blob → .corrupt)` 직접). F4는 **F-25로 분리**(청사진·T-Q1 포함) | **두 번째 관측 행동 플립**이다("치유된 blob이 격리되어 404가 된다" → "안 된다"). gated-bugfix **하드룰 10**: *"두 번째 관측 행동 플립은 근본 원인을 공유하거나 first-increment diff 안에 들어오더라도 **항상 별도 파이프라인**."* 최종안 스스로도 "게이트가 one-flip 엄격 해석을 요구하면 별도 bugfix로 파일링 가능"이라고 인정했다. **대가**: 이 픽스는 증상 클래스에 대해 **부분 해결**이며, 최종안 §2의 "GC의 유일한 파괴 연산" 주장은 **거짓으로 남는다** → §Preserved Contract와 §남은 위험 1에 **미해결 유실 경로로 굵게 명시**했다. 릴리스 게이트가 이 사실이 숨겨졌다고 판단하면 **Blocker**다 |
 
 ### Codex Plan Review — r8: clean — verdict approve, 0 findings, reviewedSha `a22771b` (docs/reviews/reconcile-gc-dedup-race/plan-r8.json). *"Ship the Round 8 plan. P-8 now proves the grave and restoration; P-9 observes all three parked put tasks through teardown after the stall assertions. The committed RED record matches red.sha and pins the stated data-loss symptom; no tests were re-run. No new critical issue found. Simpler alternative: none. Open question: none."*
+
+---
+
+## Structure Gate (B-1 — walking skeleton)
+
+### Codex Structure Review — r1 (2026-07-13) — `needs-attention`, 1 finding
+
+아티팩트: `docs/reviews/reconcile-gc-dedup-race/structure-r1.json` (reviewedSha `15f23c6`).
+Codex 요약: *"Do not ship B-1: **caller cancellation lets the new uncancellable commit escape same-key
+serialization**, so an expired upload can overwrite or resurrect state after a later successful operation."*
+**인간 triage 2026-07-13 — Accept.**
+
+| # | Finding (요지) | Severity | Decision | Reason | Action (B-1에서 실제로 한 것) |
+|---|---|---|---|---|---|
+| **S-1** | **무취소 커밋이 키별 락보다 오래 산다.** `KeyGuard`가 **호출자 퓨처**에 남아 있으므로 `upload_timeout`·disconnect가 그것을 **풀어버린다** → 같은 `bucket/key`의 재시도·delete가 락을 얻어 **먼저 끝나고**, 뒤늦게 깨어난 `spawn_blocking` rename이 **더 새로운 포인터를 덮어쓰거나 삭제된 키를 되살린다**(조용한 무결성 손상) | **high** (0.99) | **Accept** | 반박 불가. 픽스가 **핀**을 무취소 클로저로 옮기면서 **키 락은 옮기지 않았다** — 같은 논증(*"시작된 blocking 태스크는 abort 불가"*)이 **두 가드 모두에** 적용되는데 하나만 봤다 | **키 락을 커밋 클로저로 이전**(P3′). `PinGuard::commit_pointer(self, key: KeyGuard, …)`가 **두 가드를 함께 소유**하고, 클로저 안에서 **획득 역순(LIFO)으로 드롭**한다: ① 핀 ② 키 락 → 키 락이 풀리는 순간 그 put은 **이미 terminal**이다. 증인: **T-S1**(`commit_holds_key_lock_until_rename_lands`) |
+
+### 인간 결정 — S-2 (2026-07-13): **재시작-필요 복구 계약을 교환으로 수용하고 명문화**
+
+S-1의 봉인이 **새 degraded-path 행동**을 낳는다: 파일시스템 연산이 반환하지 않으면 그 `bucket/key`는
+**syscall이 반환하거나 프로세스가 재시작될 때까지 쓰기 불가**가 된다(무취소 클로저가 키 락을 쥔 채이므로).
+
+| 항목 | 내용 |
+|---|---|
+| **결정** | **교환을 수용한다 — 가드를 타임아웃으로 놓는 것은 금지**(S-1이 되살아난다) |
+| **근거** | **잠김(가용성) < 되살아나기(무결성)**. 멈춘 fs는 병리적 상황이고 그때 이 스토어는 이미 사실상 죽어 있다(`reconcile`도 같은 fs를 읽는다). 홈랩 **단일 replica + RWO PVC**라 blast radius가 **그 키 하나**다 |
+| **대가의 지불** | **침묵하지 않는다** — `KeyLocks::lock`이 `LOCK_WARN_AFTER`를 넘기면 `tracing::error!(bucket, key, …)`. **행동은 불변**(계속 기다린다 · 에러 반환 0 · 상계 0) |
+| **문서화** | §Preserved Contract의 **「⚠ 재시작-필요 복구 계약 (S-2)」** — **릴리스 게이트 제출물**. 잠김 **없이** 되살아나기를 막는 설계(키-바인드 펜싱 / 버전화된 포인터 발행)는 **F-30**으로 분리 |
+| **증인** | **T-S2**(`wedged_commit_keeps_key_unwritable_and_says_so_loudly`) — 쓰기 불가 · **경고 발화** · **행동 불변** · **delete가 이긴다**(부활 0)를 **한 테스트가 전부** 못박는다 |
+
+### Codex Structure Review — r2 (2026-07-13) — `needs-attention`, 1 finding (**신규 — 테스트 seam**)
+
+아티팩트: `docs/reviews/reconcile-gc-dedup-race/structure-r2.json` (reviewedSha `97b0ff1`, reviewedTree `9717d4c`).
+Codex 요약: *"Do not ship B-1 yet. **S-1 and S-2 are structurally resolved**, but **the committed seam cannot host
+B-2's required deterministic witnesses** without an unplanned visibility change or weaker tests."*
+`next_steps`: *"Add the test-only cross-module bridge to B-1. … **Keep `run_once_at`, protection state, and all
+seven hook fields private in production.**"*
+**인간 triage 2026-07-13 — Accept.**
+
+> **r2가 sound로 확인해 준 것(그대로 유지 — 건드리지 않는다)**: **S-1 해소**(키 락의 커밋 클로저 이전 · LIFO 드롭) ·
+> **S-2 해소**(재시작-필요 복구 계약의 명문화 + T-S2) · **fix model 전체** · **`Hooks` 7필드** · `settle()` ·
+> 코호트 · `landed` · 무덤 이름공간 · 복구 경로. ⇒ **`src/`의 프로덕션 행동은 한 글자도 바꾸지 않는다.**
+> **고칠 것은 테스트 seam 하나뿐이다.**
+
+| # | Finding (요지) | Severity | Decision | Reason | Action (이 개정에서 실제로 한 것) |
+|---|---|---|---|---|---|
+| **S-3** (신규) | **B-2의 결정적 테스트 seam이 형제 private 모듈로 쪼개져 있다.** `run_once_at`은 **`reconcile.rs` private**이고, B-2가 규정한 배리어 안무를 구성하는 데 필요한 **훅 7필드는 형제 모듈 `pins.rs` private**이다. `pins.rs`의 테스트는 `Hooks`를 지을 수 있지만 **주입형 시각의 reconciler를 부를 수 없고**, `reconcile.rs`의 테스트는 **그 반대**다. **B-2는 같은 결정적 증인 안에서 두 기능을 모두 요구한다**(§6: `run_once_at` + `Hooks{pre_grave, post_grave, …}`) → **프로덕션 가시성을 넓히거나 · 계획에 없던 다리를 놓거나 · 기록된 주입형-시각 안무를 약화시키지 않고는** B-1 위에 얹을 수 없다. **seam이 아직 싸게 바뀔 수 있는 지금 고쳐야 한다** | **high** (0.99) | **Accept** | **반박 불가.** 그리고 **계획서 자신이 그 다리를 이미 전제하고 있었다** — B-2 §6의 T-C1은 *"`run_once_at` → `gc_deleted == 1`"*이라 적고, 라이브니스 sanity는 *"**모든** `run_once_at` 호출을 `timeout`으로 감싼다"*고 규정한다. **호출부는 `pins.rs`인데 그 함수는 `reconcile.rs` private이다** — 계획은 **존재하지 않는 seam 위에 안무를 그려 놓았다.** B-1에서 잡지 않았다면 B-2 구현자가 **가시성을 넓히거나(봉인 파괴) 안무를 약화**시키는 것으로 풀었을 것이다 | **Codex 권고 그대로 — 다른 것은 아무것도 바꾸지 않았다.** ① `reconcile.rs`에 **`#[cfg(test)] pub(super) async fn run_once_at_for_test(store, now, gc_grace, settle_timeout)`** 추가 — `run_once_at`에 **위임만** 한다. `pub(super)` = **`store` 모듈 스코프** → `store::pins::tests`에서 보인다. ② **프로덕션 표면 무변화 증명**: `run_once_at`은 여전히 **모듈 private `async fn`**(`pub` 아님) · **`Hooks` 7필드 · `landed`/`live` 보호 상태는 `pins.rs` private 그대로** · 다리는 `#[cfg(test)]`라 **릴리스 빌드에 부재**(`cargo build --release` 통과 · 경고 0) · `reconcile.rs` diff = **+22 −0**(GC 삭제/격리 분기 **바이트 동일**). ③ **T-C1을 다리로 전환** — `run_once`(벽시계) + `gc_grace = 0` 우회를 **`run_once_at_for_test(&s, T0, GRACE=3600s, …)`**로 바꿔 tombstone 기준 시각과 reconcile의 `now`를 **같은 `T0`**로 묶었다(**결정성만 강화 · 단언 무변경**). ④ **다리 스모크 증인 신설** — `barrier_hooks_and_injected_clock_compose_in_one_witness`: **한 테스트가** `Hooks{during_collect}`를 짓고 **주입형 시각으로 두 패스**를 돌려(`T0` → 최초 관측 / `T0+GRACE+1s` → 회수, **sleep 0**) B-2의 안무가 **실제로 구성 가능함**을 기계로 증명한다. ⑤ **B-2 증분 문서에 §4.1 신설** — 각 증인이 **어느 모듈에 살고 어떤 다리를 쓰는지** 표로 못박았다(전 배리어 증인 → `pins.rs` + 다리 · `recover_graves` 가드/훅 불필요 테스트 → `reconcile.rs` + 직접 호출). **회귀 테스트는 여전히 RED · characterization 118 green · `allow(dead_code)` 5개 유지 · `ReconcileStats` 필드 추가 0 · 프로덕션 훅 0개 추가.** |
+
+**⚠ 이 개정이 하지 *않은* 것(경계)**: 프로덕션 가시성 확대 **0** · `Hooks` 필드 변경 **0** · `settle()`·코호트·
+`landed`·무덤 이름공간·복구 경로의 의미 변경 **0** · 관측 행동 플립 수 변화 **0** · `bugfix-lock.json` `scope[]`
+변경 **0**. **상시 승인(standing approval)의 경계 안**이다 — S-3은 **테스트 seam**이지 fix model이 아니다.

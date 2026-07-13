@@ -1026,8 +1026,15 @@ mod tests {
     /// ⚠ 한계(정직하게): put은 reconcile **시작 전에** 완주(Err)하고 그 핀은 **이미 죽어 있다**
     /// → **park 0 · spawn 0**이며, **겹치는(overlapping) 실패 put**은 전혀 재현하지 못한다.
     /// 그 창의 증인은 T-C3(B-2)다. 이 테스트는 `landed` 흔적의 **위치**만 지킨다.
+    ///
+    /// **시각은 주입한다**(S-3 다리). tombstone의 기준 시각과 reconcile이 보는 `now`가 **같은 `T0`**이므로
+    /// 만료가 **결정적으로** 성립한다 — `gc_grace = 0` 우회(*"0보다 오래됐으면 만료"*)가 필요 없고,
+    /// **실제 grace가 걸린** 2단계 tombstone 경로를 그대로 지난다. **단언은 B-1과 동일하다.**
     #[tokio::test]
     async fn failed_commit_does_not_protect_blob_from_gc() {
+        /// 실제 grace — 0 우회가 아니다.
+        const GRACE: Duration = Duration::from_secs(3600);
+
         let d = tempfile::tempdir().unwrap();
         let root = d.path().to_path_buf();
         let s = Store::new(root.clone());
@@ -1040,13 +1047,15 @@ mod tests {
             .unwrap();
         s.delete("b", "v").await.unwrap();
 
-        // 2) 만료 tombstone → 다음 패스에서 즉시 삭제 조건 성립
-        let now = SystemTime::now()
+        // 2) 만료 tombstone: `T0`에서 볼 때 **grace를 넘긴** 과거에 최초 관측된 것으로 심는다.
+        //    `T0 - 2·GRACE`가 첫 관측 → `T0`에서 경과 = 2·GRACE > GRACE → **만료**.
+        let t0 = SystemTime::now();
+        let first_seen = (t0 - 2 * GRACE)
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
         let mut pending = serde_json::Map::new();
-        pending.insert(sha.clone(), serde_json::json!(now - 3600));
+        pending.insert(sha.clone(), serde_json::json!(first_seen));
         tokio::fs::write(
             root.join(".objects").join(".gc-pending.json"),
             serde_json::to_vec(&pending).unwrap(),
@@ -1065,9 +1074,94 @@ mod tests {
         );
         assert!(!landed_has(&s, &sha), "착지하지 못한 put은 흔적을 남기지 않는다");
 
-        // 4) 실패한 put은 blob을 보호하지 않는다 → 회수된다
-        let stats = reconcile::run_once(&s, Duration::ZERO, SETTLE).await.unwrap();
+        // 4) 실패한 put은 blob을 보호하지 않는다 → 회수된다. **주입형 시각 `T0`**로 판정한다.
+        let stats = tokio::time::timeout(
+            Duration::from_secs(5),
+            reconcile::run_once_at_for_test(&s, t0, GRACE, SETTLE),
+        )
+        .await
+        .expect("reconcile 패스는 유한 시간에 끝난다")
+        .unwrap();
         assert_eq!(stats.gc_deleted, 1, "실패한 커밋은 blob을 보호하지 않는다");
         assert!(!tokio::fs::try_exists(s.blob_path(&sha)).await.unwrap());
+    }
+
+    /// **S-3 다리 스모크 — B-2의 배리어 안무가 *구성 가능함*을 증명한다.**
+    ///
+    /// 이 테스트가 존재하는 유일한 이유: **한 증인 안에서** ⓐ `Hooks`를 **짓고**(7개 필드는 `pins.rs`
+    /// private → **이 모듈에서만** 리터럴 가능) ⓑ **주입형 시각**의 reconciler를 **돌린다**
+    /// (`run_once_at`은 `reconcile.rs` private → **`run_once_at_for_test` 다리로만** 도달 가능).
+    /// 이 둘이 갈라져 있으면 T-B1·T-B2·T-B4·T-C2·T-C3·T-P4a·T-P4b-1·T-P4b-2는 **쓸 수 없다.**
+    ///
+    /// **park 0 · spawn 0** — 랑데부는 B-2의 증인들이 한다. 여기서 증명하는 것은 **seam뿐**이다.
+    /// 안무: 참조된 객체 R(포인터 살아 있음) + 미참조 blob X를 심고 **시계를 손으로 밀어** 두 패스를 돈다.
+    ///  · 패스 1 `T0`             → X **최초 관측**(tombstone) → `gc_deleted == 0`
+    ///  · 패스 2 `T0 + GRACE + 1s` → X **만료** → 회수 → `gc_deleted == 1` (**sleep 0**)
+    /// 그 사이 `during_collect` 훅은 **프로덕션 경로**(`collect_referenced`)에서 R의 sha를 패스마다 본다.
+    #[tokio::test]
+    async fn barrier_hooks_and_injected_clock_compose_in_one_witness() {
+        const GRACE: Duration = Duration::from_secs(100);
+
+        // ⓐ 훅 — `pins.rs` private 필드를 리터럴로 짓는다(이 모듈 밖에서는 불가능하다).
+        let collected: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = collected.clone();
+        let hooks = Hooks {
+            during_collect: Some(Arc::new(move |sha: &str| {
+                let (sink, sha) = (sink.clone(), sha.to_owned());
+                Box::pin(async move {
+                    sink.lock().unwrap().push(sha);
+                })
+            })),
+            ..Hooks::default()
+        };
+
+        let d = tempfile::tempdir().unwrap();
+        let s = Store::with_hooks(d.path().to_path_buf(), hooks);
+
+        // R: 참조된 객체. 포인터가 **최소 1개** 있어야 `during_collect`가 발화한다(B-2 T-B1의 디코이 D와 같은 역할).
+        let r = s
+            .put("b", "kept.bin", "text/plain", "u", b"R".to_vec())
+            .await
+            .unwrap();
+        // X: 미참조 blob(포인터 0) → GC 후보.
+        let x_content = b"X-orphan".to_vec();
+        let x_sha = hex_sha(&x_content);
+        atomic::write_atomic(&s.blob_path(&x_sha), &x_content)
+            .await
+            .unwrap();
+
+        let t0 = SystemTime::now();
+
+        // ⓑ 패스 1 — 주입형 시각 `T0`. X는 **최초 관측**일 뿐 회수되지 않는다.
+        let p1 = tokio::time::timeout(
+            Duration::from_secs(5),
+            reconcile::run_once_at_for_test(&s, t0, GRACE, SETTLE),
+        )
+        .await
+        .expect("패스 1은 유한 시간에 끝난다")
+        .unwrap();
+        assert_eq!(p1.referenced, 1, "포인터는 R 하나 — 참조 스냅샷 누수 0");
+        assert_eq!(p1.gc_deleted, 0, "grace 안 — 최초 관측만 기록된다");
+        assert!(tokio::fs::try_exists(s.blob_path(&x_sha)).await.unwrap());
+
+        // ⓒ 패스 2 — **시계를 grace 너머로 민다**(sleep 0 · 벽시계 무의존). X 만료 → 회수.
+        let p2 = tokio::time::timeout(
+            Duration::from_secs(5),
+            reconcile::run_once_at_for_test(&s, t0 + GRACE + Duration::from_secs(1), GRACE, SETTLE),
+        )
+        .await
+        .expect("패스 2는 유한 시간에 끝난다")
+        .unwrap();
+        assert_eq!(p2.referenced, 1, "여전히 R 하나");
+        assert_eq!(p2.gc_deleted, 1, "주입형 시각이 tombstone을 만료시킨다 — sleep 없이");
+        assert!(!tokio::fs::try_exists(s.blob_path(&x_sha)).await.unwrap());
+
+        // ⓓ R은 두 패스 모두 생존하고, 훅은 **프로덕션 경로**에서 매 패스 R을 정확히 1회 봤다.
+        assert!(tokio::fs::try_exists(s.blob_path(&r.sha256)).await.unwrap());
+        assert_eq!(
+            *collected.lock().unwrap(),
+            vec![r.sha256.clone(), r.sha256],
+            "during_collect(훅) × run_once_at(주입형 시각) — **한 테스트 안에서** 둘 다 쓸 수 있다"
+        );
     }
 }
