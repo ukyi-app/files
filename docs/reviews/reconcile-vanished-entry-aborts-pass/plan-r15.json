@@ -1,0 +1,34 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "plan",
+  "verdict": "needs-attention",
+  "summary": "Do not ship the plan yet. The RED proof is sound, but the new `Vanished` type lock does not actually make grave-path counter suppression inexpressible. Simpler alternative: since P5 is non-mandatory, remove `Vanished` and the post-loop guard; otherwise bind and test the pass-scoped tally.",
+  "planFile": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+  "planInDiff": true,
+  "reviewedFileCount": 1,
+  "target": "working tree diff",
+  "reviewedSha": "3b5eb09ad3de31a0dfb4e11efe7ca430999943d4",
+  "reviewedTree": "d6c98bbc4e9a3e1571767003eca2ee0b627b10ab",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 1,
+  "planFindingCount": 1,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "The grave path can still divert bumps into a fresh tally",
+      "body": "`Vanished` derives `Default`, so `grave()` can legally ignore its supplied pass tally and call `rename_durable_source_checked` with a fresh `Vanished::default()`. `SourceGone` would remain genuine and the entry would be skipped, but the pass tally would stay zero. The specified witnesses do not catch this: W5 checks its local helper tally, W6 removes only the child while the container survives, and W10/W10-TEMP exercise `Entry::seen`, not `grave`. If `.objects` disappears at the grave rename, this implementation returns `SourceGone`, skips the post-loop guard, and lets `write_atomic` recreate `.objects` and publish the ledger with `Ok`, whereas the baseline aborts. Thus the claimed inexpressible counter lock and catastrophe detection remain unproven.",
+      "file": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+      "line_start": 592,
+      "line_end": 604,
+      "confidence": 0.98,
+      "recommendation": "Bind grave accounting to the `Entry`-owned pass tally or otherwise prevent construction of an alternate tally. Add a deterministic `pre_grave` witness that removes `.objects`, then asserts `Err(NotFound)`, no ledger publication, and no recreation; verify that substituting a fresh tally makes this witness fail.",
+      "isPlanFinding": true
+    }
+  ],
+  "next_steps": [
+    "Add the grave-path container-destruction witness and include shared-tally identity in the release-gate review.",
+    "Alternatively, remove the optional guard and `Vanished` machinery together with their preservation claims."
+  ]
+}
