@@ -1,0 +1,34 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "plan",
+  "verdict": "needs-attention",
+  "summary": "No-ship: the committed RED proof and call-site seams are sound, but P16 promises impossible runtime logging equivalence and incorrectly claims logging cannot be tested. Simpler alternative: keep the production design unchanged and correct the contract using the existing tracing harness. Open question: are downstream logs newly reached after successful continuation explicitly part of the single flip? No tests were run.",
+  "planFile": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+  "planInDiff": true,
+  "reviewedFileCount": 1,
+  "target": "working tree diff",
+  "reviewedSha": "b16677500c317f902a02abe98bd850a3da4071e3",
+  "reviewedTree": "d704f73082453585e60fbfafcf4f034c4bb8178d",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 1,
+  "planFindingCount": 1,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "P16 conflates unchanged trace call sites with unchanged runtime logging",
+      "body": "P16 says logging behavior remains identical and waives a witness because the suite supposedly installs no tracing subscriber. However, the fix continues after a vanished entry, so later existing events—such as the quarantine warning or GC-restoration event—can be emitted where the baseline aborted first. Unchanged call sites therefore do not imply an identical log stream. The evidence premise is also false: at red.sha, pins.rs defines CaptureSubscriber (995–1037), installs it in four tests, and asserts exact event counts. Following this contract either forces suppression of legitimate downstream logs or leaves an impossible preservation claim unverified.",
+      "file": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+      "line_start": 1339,
+      "line_end": 1339,
+      "confidence": 0.99,
+      "recommendation": "Narrow P16 to preserving trace call sites/schema and emitting no skip-specific event; explicitly classify downstream existing events made reachable by pass continuation as part of the allowed flip. Reuse or extend CaptureSubscriber to witness skip-path silence and expected downstream events.",
+      "isPlanFinding": true
+    }
+  ],
+  "next_steps": [
+    "Correct P16 and its repeated logging statement at lines 1734–1745.",
+    "Add the tracing witness to B-1 acceptance before the structure gate."
+  ]
+}
