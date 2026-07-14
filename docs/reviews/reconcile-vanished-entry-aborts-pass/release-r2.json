@@ -1,0 +1,20 @@
+{
+  "ok": false,
+  "status": "review-incomplete",
+  "kind": "release",
+  "verdict": null,
+  "summary": null,
+  "planFile": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+  "planInDiff": null,
+  "reviewedFileCount": 26,
+  "target": "branch diff against main",
+  "reviewedSha": "6f62e3a9d0389f21605316fa59bf9e369de13f77",
+  "reviewedTree": "cb123e3562586dc16e88d2c199ece60e6b67af4f",
+  "codexStatus": 1,
+  "parseError": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Jul 20th, 2026 4:42 AM.",
+  "findingCount": 0,
+  "planFindingCount": 0,
+  "findings": [],
+  "next_steps": [],
+  "hint": "Codex returned no usable verdict (codex run failed, was empty, or output did not parse). Re-run; if it persists, check `/codex:setup`."
+}
