@@ -1,0 +1,34 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "plan",
+  "verdict": "needs-attention",
+  "summary": "No ship: the locked RED tests correctly exercise the real call sites, but the plan still permits the obsolete six-case gate. Simpler alternative: make the embedded nine-case script the sole normative gate definition and cross-reference it everywhere else. Open question: none.",
+  "planFile": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+  "planInDiff": true,
+  "reviewedFileCount": 1,
+  "target": "working tree diff",
+  "reviewedSha": "fada12dd54aa151bbb00665c522c5ca7e75eb08d",
+  "reviewedTree": "079c4c5534d8bfb86b1ae37a1cbe014b6d59b859",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 1,
+  "planFindingCount": 1,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "Normative checklist still specifies the obsolete six-case selftest",
+      "body": "The B-1 increment still requires a “6-fixture” selftest, and the release checklist repeats that count at line 2284, while the revised gate requires nine cases: (g) missing witness, (h) early match against a large listing, and (i) listing failure are what pin the accepted P-38/P-39 discovery fixes. An engineer following the increment/checklist can omit those three cases and still claim plan compliance, leaving listing-status and SIGPIPE regressions untested.",
+      "file": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+      "line_start": 1419,
+      "line_end": 1419,
+      "confidence": 0.99,
+      "recommendation": "Update every normative six-case reference to nine cases, explicitly require (a)–(i), and state that the six parser predicates plus M-SIGPIPE and M-OLDPARSER must all be mutation-killed.",
+      "isPlanFinding": true
+    }
+  ],
+  "next_steps": [
+    "Correct the stale B-1 and B-5 selftest requirements.",
+    "Re-run the plan review after the document consistently requires the nine-case gate."
+  ]
+}
