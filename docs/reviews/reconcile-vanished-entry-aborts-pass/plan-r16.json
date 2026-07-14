@@ -1,0 +1,45 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "plan",
+  "verdict": "needs-attention",
+  "summary": "Do not ship the plan: the RED lock and production call-site witnesses are sound, but Round 16’s sealed `absence.rs`/single-tally design conflicts with normative pseudocode. Simpler alternative: remove `Vanished` and the guard and only skip confirmed source absence; already rejected because an unrecreated `.objects` loss would appear to be a clean GC pass. Open question: none.",
+  "planFile": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+  "planInDiff": true,
+  "reviewedFileCount": 1,
+  "target": "working tree diff",
+  "reviewedSha": "342e91d87c593525bd5dcceb72c591b0aba2f540",
+  "reviewedTree": "6282ca401dc08d5582ad711c852b5e319fa12335",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 2,
+  "planFindingCount": 2,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "The grave pseudocode still uses the pre-relocation `atomic` API",
+      "body": "The normative snippet references `atomic::Absent`, `atomic::Vanished`, `atomic::rename_durable_source_checked`, and `atomic::Renamed`, although Round 16 moves them to `reconcile/absence.rs` and leaves `atomic.rs` with ordinary durability helpers. It also repeats the withdrawn claim that omitting one bump is inexpressible. Following this text either fails compilation or encourages moving the types back into `atomic`, undoing the sealed visibility boundary and allowing alternate tallies.",
+      "file": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+      "line_start": 620,
+      "line_end": 634,
+      "confidence": 0.99,
+      "recommendation": "Replace every live `atomic::` reference with one explicit `reconcile::absence` import/re-export map, including the helper needed by `pins.rs`; update W5’s location; and remove the stale M-COUNT claim in favor of the two M-NOBUMP behavioral killers.",
+      "isPlanFinding": true
+    },
+    {
+      "severity": "high",
+      "title": "The concrete `PassGuard::begin` diff omits the sealed pass tally",
+      "body": "This diff still calls `recover_graves` without `&Vanished`, contradicting the required signature at lines 699–703 and the single tally created at lines 649–652. The stale behavior row at line 780 likewise says a grave-loop disappearance leaves `vanished == 0` and skips the guard. An implementer following these instructions either hits a signature mismatch or recreates the discarded separate-tally behavior.",
+      "file": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+      "line_start": 736,
+      "line_end": 740,
+      "confidence": 0.99,
+      "recommendation": "Show `PassGuard::begin(..., vanished: &Vanished)` passing that same reference to `recover_graves(..., vanished)`, and correct line 780 to state that the tally is positive, the guard runs, and it accepts the recreated directory.",
+      "isPlanFinding": true
+    }
+  ],
+  "next_steps": [
+    "Normalize all live pseudocode and behavior tables to the post-Round-16 module and tally design.",
+    "Repeat the plan review after these document-only corrections; the committed RED record need not be regenerated."
+  ]
+}
