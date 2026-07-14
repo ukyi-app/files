@@ -1,0 +1,34 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "plan",
+  "verdict": "needs-attention",
+  "summary": "Do not ship: the RED proof is sound and P-30 is fixed, but the normative `Entry` interface cannot compile as written. Simpler alternative: apply one shared absence-classification helper directly at existing call sites with a pass-local tally, avoiding the child-module wrapper surface. Open question: none.",
+  "planFile": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+  "planInDiff": true,
+  "reviewedFileCount": 1,
+  "target": "working tree diff",
+  "reviewedSha": "8a37720d93fca641f3adc117ddacdfd140d46d9c",
+  "reviewedTree": "155a0487729545c8cbd413cfdc24dd0ed5a0c741",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 1,
+  "planFindingCount": 1,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "The planned Entry filesystem methods are inaccessible to reconcile.rs",
+      "body": "`Entry` lives in the new child module `reconcile::entry`. The plan explicitly marks `snapshot`, `name`, and `class` as `pub(super)`, but leaves all six filesystem methods private. Later normative code in the parent `reconcile.rs` calls these methods, which Rust rejects with E0624. An engineer following this interface cannot reach the acceptance stage without improvising a visibility change absent from the plan.",
+      "file": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+      "line_start": 649,
+      "line_end": 656,
+      "confidence": 0.99,
+      "recommendation": "Declare `file_type`, `metadata`, `read`, `remove`, `rename_into`, and `rename_durable_to` as `pub(super)` while keeping `seen` private. Also show the lifetime-correct `impl<'v> Entry<'v>` interface and reflect these method visibilities in the import/scope map.",
+      "isPlanFinding": true
+    }
+  ],
+  "next_steps": [
+    "Correct the document-only interface declarations.",
+    "Re-run the plan review; the committed RED record does not need regeneration."
+  ]
+}
