@@ -3,7 +3,7 @@ bugfix: reconcile-vanished-entry-aborts-pass
 invariant-class: bugfix
 entry-track: bug
 review-track: standard
-pipeline-stage: verification
+pipeline-stage: release-gate
 issue-tracker: local
 symptom: "reconcile가 .objects 스냅샷을 뜬 뒤 항목별 stat/read를 하는 사이, 동시 put_stream이 .tmp-<uniq>를 최종 blob 이름으로 rename하면, 사라진 경로에 대한 stat/read가 ENOENT를 하드 io::Error로 전파해 **패스 전체가 Err로 중단**된다(그 항목만 건너뛰는 게 아니라). 쓰기 트래픽이 있는 동안 reconcile이 사실상 완주하지 못해 GC·temp 정리·격리가 안 돌고 디스크가 찬다."
 red-baseline: ac58bd7982d06e46f37cd4aa6a9c274d93bd8195
