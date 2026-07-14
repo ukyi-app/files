@@ -1,0 +1,45 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "plan",
+  "verdict": "needs-attention",
+  "summary": "No-ship: the committed RED proof is valid and exercises the exact pass-abort symptom, but Round 22's acceptance gate rejects valid integration witnesses and does not enforce zero ignored tests. Simpler alternative: use one target-aware discovery script as the registry authority instead of duplicating basename lists across shell and W-REG. Open question: none.",
+  "planFile": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+  "planInDiff": true,
+  "reviewedFileCount": 1,
+  "target": "working tree diff",
+  "reviewedSha": "9faccaff56baf8abd301d4683a4ca06c38c01b50",
+  "reviewedTree": "f4209e89962584d9bc56801261c3d8ed6e1db4fc",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 2,
+  "planFindingCount": 2,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "Discovery anchor rejects valid integration witnesses",
+      "body": "Several required witnesses are top-level functions in integration-test crates, which libtest lists as `<id>: test`. The loop requires `::<id>: test`, so correctly implemented W4/W7/W9/W10c/W17 and W13 witnesses will be reported missing before the suites run.",
+      "file": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+      "line_start": 1568,
+      "line_end": 1570,
+      "confidence": 0.99,
+      "recommendation": "Match both crate-root and nested names with `(^|::)<id>: test$`, or verify exact target-qualified harness names stored in the canonical table.",
+      "isPlanFinding": true
+    },
+    {
+      "severity": "high",
+      "title": "The zero-ignored gate is only prose",
+      "body": "No executable acceptance command parses ignored counts or fails when a witness is ignored. Cargo therefore exits successfully for the exact `1 ignored` attack documented by the plan, leaving B-IGNORE open despite describing `0 ignored` as a gate.",
+      "file": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+      "line_start": 1579,
+      "line_end": 1579,
+      "confidence": 0.99,
+      "recommendation": "Capture every suite result and exit nonzero on any nonzero ignored count. Also reject `#[ignore]` additions or deliberately execute ignored tests with `--include-ignored`.",
+      "isPlanFinding": true
+    }
+  ],
+  "next_steps": [
+    "Correct the matcher and verify it against one nested lib witness and one crate-root integration witness.",
+    "Implement an executable zero-ignored assertion, then repeat the plan review without running GREEN tests."
+  ]
+}
