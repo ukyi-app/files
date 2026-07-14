@@ -1,0 +1,45 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "plan",
+  "verdict": "needs-attention",
+  "summary": "Do not ship the plan yet. The committed RED evidence correctly captures the exact pass-abort symptom, but the revised witness gate still has two material defects. Simpler alternative: direct file-based discovery plus table-driven predicate tests. Open question: none.",
+  "planFile": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+  "planInDiff": true,
+  "reviewedFileCount": 1,
+  "target": "working tree diff",
+  "reviewedSha": "a5e202168bb135ee5f8cdfd6196104bc55146889",
+  "reviewedTree": "39f63f0ad372a85b9ba4c1c368c6519b7ec2cea6",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 2,
+  "planFindingCount": 2,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "`pipefail` can turn a successful witness match into `MISSING WITNESS`",
+      "body": "The discovery check pipes `list_for` into `grep -qE` while `pipefail` is enabled. After an early match, `grep -q` exits and the upstream `cat` can receive SIGPIPE; the pipeline then returns 141 and takes the false `MISSING WITNESS` branch. This was reproduced with a matching first line followed by sufficient output. As the test list grows, a present mandatory witness can therefore block acceptance nondeterministically.",
+      "file": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+      "line_start": 1711,
+      "line_end": 1715,
+      "confidence": 0.99,
+      "recommendation": "Cache each target’s list, check the cargo listing exit status, and run `grep -qE` directly against the cached file rather than through a pipeline. Add an early-match/large-list selftest.",
+      "isPlanFinding": true
+    },
+    {
+      "severity": "high",
+      "title": "Two advertised verdict predicates are not actually regression-tested",
+      "body": "Cases `(d)` and `(f)` both pass cargo exit 101. Consequently, deleting or breaking the numeric `failed` check and the zero-result-line check still leaves all six selftests green because the independent nonzero-exit check supplies the expected failure. Thus `M-FAILED-10` and the no-results guard are not pinned as claimed; a masked or miswired cargo exit could make the live gate accept failed or absent suite output.",
+      "file": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+      "line_start": 1675,
+      "line_end": 1677,
+      "confidence": 1,
+      "recommendation": "Run the 10-failed and zero-result fixtures with synthetic cargo exit 0, or directly assert their parsed tallies. Keep case `(e)` as the separate nonzero-exit witness.",
+      "isPlanFinding": true
+    }
+  ],
+  "next_steps": [
+    "Repair discovery so successful matches cannot inherit upstream SIGPIPE status.",
+    "Make every `verdict` predicate independently load-bearing in `--selftest`."
+  ]
+}
