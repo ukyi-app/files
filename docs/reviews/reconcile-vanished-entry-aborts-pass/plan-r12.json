@@ -1,0 +1,35 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "plan",
+  "verdict": "needs-attention",
+  "summary": "Do not ship: B-16 still permits permanent blob deletion, contradicting the plan’s “noise only” premise. Simpler alternative: none preserves both liveness and safety with value-only container identity; retaining fail-closed behavior is safer. Open question: is data loss under B-16 acceptable? If not, option B needs redesign.",
+  "planFile": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+  "planInDiff": true,
+  "reviewedFileCount": 1,
+  "target": "working tree diff",
+  "reviewedSha": "c1e02a022bc8671c3b2079af1218bdcbbe0a6798",
+  "reviewedTree": "5e82fe0f382cdfc224eaa93fd2fb50792d1b0b3b",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 1,
+  "planFindingCount": 1,
+  "findings": [
+    {
+      "severity": "critical",
+      "title": "Per-entry tombstone removal does not prevent B-16 data loss",
+      "body": "The claimed seal assumes every stale pending key corresponds to a Blob that returns `Seen::Gone`. On an accepted same-inode container ABA, an earlier entry X can return forged `Gone`, allowing the fixed pass to continue. A restored blob S with an expired in-memory tombstone can then either be read successfully from the new container and reaped during the same pass, or—if absent from the old snapshot—survive final cleanup with its old timestamp and be reaped next pass. `pending.remove` only covers Blob entries that themselves return `Gone`; it protects neither case. The baseline aborts at X before reaching or republishing S, so this is a new permanent-404 path, not merely lost observability.",
+      "file": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+      "line_start": 669,
+      "line_end": 676,
+      "confidence": 0.99,
+      "recommendation": "Add a deterministic witness with expired tombstone S, an earlier vanished entry X, same-inode container recreation, and restored S. Require S to survive with a fresh grace period. Then introduce stable container-generation identity or prevent a pass that observes `Gone` from applying inherited tombstone ages to the recreated container; characterize the latter against continuous temp churn.",
+      "isPlanFinding": true
+    }
+  ],
+  "next_steps": [
+    "Correct the Single-Flip and B-16 risk claims to acknowledge the unresolved deletion path.",
+    "Specify and add the missing restored-blob/tombstone witness before implementation.",
+    "Re-run the plan review after choosing a container-generation or ledger-invalidation design."
+  ]
+}
