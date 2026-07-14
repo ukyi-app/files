@@ -1,0 +1,34 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "plan",
+  "verdict": "needs-attention",
+  "summary": "Do not ship: the RED proof is sound, but Round 17’s normative `atomic.rs` keep-map omits load-bearing production APIs. Simpler alternative: leave `atomic.rs` intact except for widening `fsync_dir_blocking`; move only the absence-related APIs. Open question: none.",
+  "planFile": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+  "planInDiff": true,
+  "reviewedFileCount": 1,
+  "target": "working tree diff",
+  "reviewedSha": "c8ee37e95a12785504dd6eb7f2b7e24f5a5ce23f",
+  "reviewedTree": "78e7f25bb128534ba54a878c6fcf690eccfb58b3",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 1,
+  "planFindingCount": 1,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "The atomic keep-map deletes the existing commit pipeline",
+      "body": "The scope says only `write_atomic`, `rename_durable`, `fsync_dir{,_blocking}`, and `mkdir_p_durable` remain in `atomic.rs`. At `red.sha`, however, `pins.rs:369` calls `stage_blocking` and then `Staged::commit_blocking`, while `objects.rs:75` calls `unique_suffix`; `rename_durable_blocking` and `mkdir_p_durable_blocking` are also required internally. Following this normative text either fails compilation or forces an unspecified rewrite of the uncancellable pointer-commit and durable-directory machinery, risking cancellation and durability regressions unrelated to F-14.",
+      "file": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+      "line_start": 1233,
+      "line_end": 1235,
+      "confidence": 0.99,
+      "recommendation": "Replace the exclusive keep-list with an explicit statement that all pre-existing atomic APIs—including `stage_blocking`, `Staged`, `unique_suffix`, `rename_durable_blocking`, and `mkdir_p_durable_blocking`—remain unchanged. Specify that only the absence-related symbols move and only `fsync_dir_blocking` visibility changes.",
+      "isPlanFinding": true
+    }
+  ],
+  "next_steps": [
+    "Correct both exclusive `atomic.rs` keep-lists, including the matching text at lines 237–240.",
+    "Re-run the document-only plan review; the committed RED record does not need regeneration."
+  ]
+}
