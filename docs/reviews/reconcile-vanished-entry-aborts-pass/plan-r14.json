@@ -1,0 +1,45 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "plan",
+  "verdict": "needs-attention",
+  "summary": "Do not ship. The committed RED tests fail for the intended symptom, and the P-21 refutation is persuasive, but the plan still contains a separate container-ABA hole and an ineffective preservation witness. Simpler alternative: if container replacement is explicitly unsupported, use a path-based source-absence check without fd sealing. Open question: whether P5's noisy-failure guarantee is mandatory; if it is, enumeration must use the pinned handle.",
+  "planFile": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+  "planInDiff": true,
+  "reviewedFileCount": 1,
+  "target": "working tree diff",
+  "reviewedSha": "865b11e4b72440e86d8be7be39356533486369eb",
+  "reviewedTree": "b56dc73ffb7264de444e74a11e20a38b22cf2458",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 2,
+  "planFindingCount": 2,
+  "findings": [
+    {
+      "severity": "critical",
+      "title": "The pin can validate a different directory than the one enumerated",
+      "body": "The plan pins pathname A, then independently opens the pathname with read_dir and attaches A's Container to every returned entry. If `.objects` changes A→B between those calls and B→A before processing, an entry X enumerated from B can fail through its stored pathname while `fstatat(pin_A, X)` returns ENOENT and `stat(.objects)` again matches A. The plan therefore mints Absent and may publish the pending ledger, whereas the baseline aborts. Correct source ordering alone does not close this ABA, contradicting P5 and creating a second observable behavior change.",
+      "file": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+      "line_start": 425,
+      "line_end": 437,
+      "confidence": 0.99,
+      "recommendation": "Enumerate and prove absence through the same opened directory handle, such as a duplicated pinned fd used for readdir. Add a deterministic A→B swap between pin and enumeration followed by B→A restoration before processing; require the original NotFound and no pending-ledger publication.",
+      "isPlanFinding": true
+    },
+    {
+      "severity": "high",
+      "title": "W10-ABA-RB does not kill the claimed path-reinterpretation mutants",
+      "body": "The witness renames the pinned directory away and immediately calls entry_is_absent, with no restoration between the child probe and parent-identity check. Correct code sees X through the pin and returns None. M-PIN or M-ATFDCWD sees ENOENT, but then also sees `.objects` absent and returns None. With the declared single-threaded, zero-park setup, the mutant cannot forge Absent, so this test can pass without proving the preservation guarantee attributed to it.",
+      "file": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+      "line_start": 1130,
+      "line_end": 1130,
+      "confidence": 0.99,
+      "recommendation": "Add a deterministic test seam after recording the child-probe result and before checking container identity. Restore the original directory at that seam so pinned code retains an Ok probe while path-based mutants retain ENOENT and incorrectly mint Absent.",
+      "isPlanFinding": true
+    }
+  ],
+  "next_steps": [
+    "Bind directory enumeration and absence validation to one open handle, then add the inter-open ABA witness.",
+    "Repair W10-ABA-RB and re-audit the M-PIN and M-ATFDCWD kill claims before implementation."
+  ]
+}
