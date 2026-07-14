@@ -1,0 +1,33 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "structure",
+  "verdict": "needs-attention",
+  "summary": "No-ship: the root-cause seam matches the approved plan and no test weakening was found, but the branch violates the locked single-flip scope.",
+  "planFile": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+  "planInDiff": null,
+  "reviewedFileCount": 17,
+  "target": "branch diff against main",
+  "reviewedSha": "608936182237ec4a33be17a20d74ae93bb67c343",
+  "reviewedTree": "72a0c00c7ee692c45d55f699a9b4a2df52d75341",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 1,
+  "planFindingCount": 0,
+  "findings": [
+    {
+      "severity": "critical",
+      "title": "Out-of-scope domain contract change breaks the single-flip lock",
+      "body": "The branch adds project-wide glossary contracts for Vanished, Absent, and Entry/Seen, but bugfix-lock.json limits non-test changes to src/store/**, docs/adr/**, and scripts/f14-witness-gate.sh. CONTEXT.md is neither an allowed path nor exempt slug-local bookkeeping. Under the review's non-negotiable scope rule, this undeclared change surface is a Blocker regardless of whether the prose is accurate.",
+      "file": "CONTEXT.md",
+      "line_start": 103,
+      "line_end": 121,
+      "confidence": 1,
+      "recommendation": "Remove this glossary change from B-1 and land it separately, or formally revise the plan and lock to include CONTEXT.md before rerunning the gate.",
+      "isPlanFinding": false
+    }
+  ],
+  "next_steps": [
+    "Restore the locked scope, then rerun the structure review against the revised diff."
+  ]
+}

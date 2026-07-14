@@ -3132,3 +3132,16 @@ durability 0.55 · bypass 6, 치명 0/3)을 `pipeline-stage: design`인 채로 p
 아티팩트: `docs/reviews/reconcile-vanished-entry-aborts-pass/plan-r26.json` (reviewedSha `348190a`).
 **plan 게이트 종료 — 26라운드 · 결함 40건(critical 12 · high 22 · medium 2 · 기각 1 = P-21).**
 `pipeline-stage: design → executing`.
+
+### Codex Structure Review — s1: needs-attention (1 critical)
+
+> *"the **root-cause seam matches the approved plan** and **no test weakening was found**, but the branch
+> **violates the locked single-flip scope**."*
+
+| id | severity | finding | triage | 근거 |
+|---|---|---|---|---|
+| **S-1** | critical (1.0) | *Out-of-scope domain contract change breaks the single-flip lock* — 브랜치가 `Vanished`·`Absent`·`Entry/Seen`의 **프로젝트 전역 용어집 계약**을 추가하는데 `bugfix-lock.json`의 `scope[]`가 `CONTEXT.md`를 **선언하지 않았다**. 산문의 정확성과 무관하게 **미선언 변경 표면은 Blocker** | **Accept → 락 개정** | conductor-side `/code-review`의 **Standards 축이 `CONTEXT.md` 미갱신을 하드 위반**으로 잡았다 — F-14의 도메인 개념이 `pins`·`reconcile`·`atomic`을 관통하고 `PassGuard::begin`의 시그니처에까지 올라왔다. **빼면 하드 위반이 되살아나고, 선언하지 않으면 미선언 표면이다** ⇒ **선언이 유일한 답**이다. 선례: 직전 파이프라인 `reconcile-gc-dedup-race`의 릴리스 게이트 **R-4**가 같은 이유로 `CONTEXT.md`·`docs/adr/**`를 추가했다 |
+
+**인간 판정**: `scope[]`에 **`CONTEXT.md` 추가**(커밋 `760e517`). 설계·행동 변경 0 — **선언만** 넓힌다.
+아티팩트: `docs/reviews/reconcile-vanished-entry-aborts-pass/structure-r1.json` (reviewedSha `6089361`).
+**라운드 2 실행 예정.**
