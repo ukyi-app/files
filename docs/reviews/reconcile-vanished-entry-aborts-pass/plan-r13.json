@@ -1,0 +1,34 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "plan",
+  "verdict": "needs-attention",
+  "summary": "Do not ship. The locked RED record matches `red.sha`, and both committed call-site assertions fail for the intended `PASS ABORTED` symptom. However, option C still permits change-induced data loss. Simpler alternative: none found that preserves the declared all-call-site flip and data-loss constraint; a Temp-only catch leaves the same invariant broken. Open question: none—the human already ruled data loss unacceptable.",
+  "planFile": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+  "planInDiff": true,
+  "reviewedFileCount": 1,
+  "target": "working tree diff",
+  "reviewedSha": "863517f4ec75b8e272e50c6bd382973768519a07",
+  "reviewedTree": "ac985412be5a987fcd26b62b6eb2ac0fd3963cdb",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 1,
+  "planFindingCount": 1,
+  "findings": [
+    {
+      "severity": "critical",
+      "title": "A genuine vanished entry can still unlock same-pass deletion of a restored blob",
+      "body": "The plan claims same-pass reaping of restored blob S requires a forged `Gone`. It does not: the intended true-`Gone` flip is sufficient. References and pending tombstones are captured before the entry loop. If the first snapshotted blob X genuinely vanishes, baseline aborts at X, but option C continues. A later restored blob S with an expired tombstone and a pointer restoration occurring after reference collection is then grave/reaped; `pending.remove(X)` cannot protect S. This produces the permanent 404 that the human decision declared unacceptable and invalidates the plan's “data loss paths zero” conclusion.",
+      "file": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+      "line_start": 813,
+      "line_end": 820,
+      "confidence": 0.99,
+      "recommendation": "Add a deterministic production-call-site witness with at least two expired blobs: park on the first `pre_entry`, make that entry genuinely vanish, restore a pointer for a later blob after reference collection, and assert the later blob is not reaped. Redesign the pass so any observed `Gone`, including during grave recovery, prevents stale pre-pass tombstones from authorizing subsequent irreversible reaps—likely by deferring reaps until the scan completes or implementing generation-bound tombstones.",
+      "isPlanFinding": true
+    }
+  ],
+  "next_steps": [
+    "Revise the P-20 analysis to include true `Gone` paths, not only forged `Gone`.",
+    "Do not advance to implementation until the new data-loss witness and preservation rule are specified."
+  ]
+}
