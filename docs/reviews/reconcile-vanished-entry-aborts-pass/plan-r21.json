@@ -1,0 +1,34 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "plan",
+  "verdict": "needs-attention",
+  "summary": "No-ship: the committed RED record matches red.sha and both tests fail for the intended PASS ABORTED symptom, but Round 21’s blocking logging witness is not wired into executable acceptance. Simpler alternative: none materially safer for the production fix. Open question: none.",
+  "planFile": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+  "planInDiff": true,
+  "reviewedFileCount": 1,
+  "target": "working tree diff",
+  "reviewedSha": "9857194f62e076acd57db3acda748c6889d71a9a",
+  "reviewedTree": "556dce79c51533d1692044241dc7f4bf32fcc726",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 1,
+  "planFindingCount": 1,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "Blocking W-LOG witnesses can remain undiscovered",
+      "body": "The exhaustive test-change scope omits `src/store/pins/tests/log_witness.rs` and its required `mod log_witness;` registration, although W-LOG-D is declared blocking elsewhere. Rust does not auto-discover files under `src/store/pins/tests`; therefore every broad Cargo command can report 0 failed without compiling W-LOG-A/B/C/D, leaving the documented logging mutants alive.",
+      "file": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+      "line_start": 1753,
+      "line_end": 1757,
+      "confidence": 0.99,
+      "recommendation": "Add `log_witness.rs` and `mod log_witness;` explicitly to B-1 and Scope. Make acceptance verify that every W-LOG test ID is discovered before running the suite, so zero discovered tests cannot pass.",
+      "isPlanFinding": true
+    }
+  ],
+  "next_steps": [
+    "Wire W-LOG-A/B/C/D into the Rust module tree and B-1 scope.",
+    "Add a discovery assertion for the W-LOG test IDs, then repeat the plan review without executing GREEN tests."
+  ]
+}
