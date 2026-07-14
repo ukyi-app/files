@@ -1,0 +1,33 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "plan",
+  "verdict": "needs-attention",
+  "summary": "No-ship: the RED artifact matches red.sha and exercises the real call site, but the plan still declares an uncharacterized second observable change. No tests were executed. Simpler alternative: direct call-site NotFound handling is smaller, but inadequately covers the documented rename/remove/recovery seams. Open question: is the debug event intentional or stale?",
+  "planFile": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+  "planInDiff": true,
+  "reviewedFileCount": 1,
+  "target": "working tree diff",
+  "reviewedSha": "33f31fd00963a636fa4756d667398f4f4f6b995e",
+  "reviewedTree": "fc7a18de637f7f00f6d02ac2da3f43461535be0b",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 1,
+  "planFindingCount": 1,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "The plan mandates an uncharacterized second observable behavior",
+      "body": "The “side behavior changes” section says skipped entry names will produce a new tracing::debug! event, but that event is absent from the purported verbatim, compile-proven implementation and the file-by-file scope. Following this requirement adds log volume and entry-name telemetry beyond the single locked Err→Ok flip; following the normative code omits a declared requirement. No acceptance witness characterizes the event.",
+      "file": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+      "line_start": 1731,
+      "line_end": 1734,
+      "confidence": 0.99,
+      "recommendation": "Remove the logging claim and explicitly preserve existing logging behavior. If the event is intentional, treat it as a separate observable change requiring its own pipeline and acceptance contract.",
+      "isPlanFinding": true
+    }
+  ],
+  "next_steps": [
+    "Reconcile the logging statement with the normative implementation before the structure gate."
+  ]
+}
