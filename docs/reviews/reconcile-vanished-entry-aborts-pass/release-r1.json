@@ -1,0 +1,68 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "release",
+  "verdict": "needs-attention",
+  "summary": "No-ship. The two flip rows are valid witnesses of the same abort-to-completion behavior; record consistency, ancestry, scope, and test preservation check out. Mandatory release-profile, original-repro, and anti-cheat mutant evidence is absent, and one integration witness can pass without covering its claimed branch.",
+  "planFile": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+  "planInDiff": null,
+  "reviewedFileCount": 23,
+  "target": "branch diff against main",
+  "reviewedSha": "aa13bf0d8e0ee30f103c765d5eedc810d0027e37",
+  "reviewedTree": "eda441ccee2cbfd1b47cd65f03b3feb836bd5b85",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 4,
+  "planFindingCount": 0,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "Missing verification: release-profile controls",
+      "body": "The plan makes two `cargo test --release` commands mandatory and calls them the only control against profile-dependent behavior. The committed evidence shows the debug witness gate followed only by a `dev` build; it contains no release command or output. Production-profile divergence therefore remains untested.",
+      "file": "docs/reviews/reconcile-vanished-entry-aborts-pass/verification.md",
+      "line_start": 277,
+      "line_end": 296,
+      "confidence": 1,
+      "recommendation": "Have the status script execute both exact release commands from plan lines 2197-2199 at green.sha and commit their raw output and exit status.",
+      "isPlanFinding": false
+    },
+    {
+      "severity": "high",
+      "title": "Missing verification: original un-minimised repro",
+      "body": "The green script-owned record explicitly contains `repro: null`. The diagnosis says the original repro was 40 buffered puts racing reconciliation, but its characterization `ok` line is insufficient: the test neither proves a reconciliation iteration ran nor that the vanished-entry race occurred, and the red version passed while discarding reconciliation errors.",
+      "file": "docs/reviews/reconcile-vanished-entry-aborts-pass/bugfix-verify-green-6a7bed4fcc449447d4e827cf21e7bb28aac2eadb.json",
+      "line_start": 16,
+      "line_end": 16,
+      "confidence": 0.99,
+      "recommendation": "Add a script-owned original-repro command with a non-vacuous race/iteration witness, execute the documented workload at green.sha, and commit its raw output in the verify record and verification.md.",
+      "isPlanFinding": false
+    },
+    {
+      "severity": "high",
+      "title": "Missing verification: gate-predicate mutation kills",
+      "body": "The plan requires individually removing every discovery/result predicate plus the SIGPIPE and old-parser controls and observing the selftest fail. Verification contains only the unmodified `SELFTEST: PASS` output, so it does not prove the gate cannot again false-green after one of its predicates is weakened.",
+      "file": "docs/reviews/reconcile-vanished-entry-aborts-pass/verification.md",
+      "line_start": 217,
+      "line_end": 234,
+      "confidence": 0.99,
+      "recommendation": "Run the required final-tree predicate mutants, capture each expected RED result, and commit the raw mutation audit.",
+      "isPlanFinding": false
+    },
+    {
+      "severity": "medium",
+      "title": "Phase G does not prove the recovery remove branch was exercised",
+      "body": "After waiting, the test deletes every remaining grave itself and later defines `stepped_k` merely as an intact K blob with no grave. That condition is true whether production executed the remove branch or the test deleted the grave, so the claimed two-branch coverage assertion can pass without exercising a vanished K grave.",
+      "file": "tests/reconcile_vanishing_entries.rs",
+      "line_start": 275,
+      "line_end": 299,
+      "confidence": 0.98,
+      "recommendation": "Assert the rendezvous was reached and count successful external deletions separately for R and K graves; require at least one K deletion before accepting remove-branch coverage.",
+      "isPlanFinding": false
+    }
+  ],
+  "next_steps": [
+    "Repair the Phase G witness before refreshing evidence.",
+    "Regenerate machine-owned verification at green.sha with release-profile, original-repro, and gate-mutant outputs.",
+    "Do not merge until the refreshed committed evidence satisfies every acceptance requirement."
+  ]
+}
