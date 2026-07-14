@@ -1,0 +1,19 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "structure",
+  "verdict": "approve",
+  "summary": "Ship: S-1 is resolved. `CONTEXT.md` is now explicitly declared in `bugfix-lock.json` scope, and the round-2 commits introduce no new critical issue.",
+  "planFile": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+  "planInDiff": null,
+  "reviewedFileCount": 19,
+  "target": "branch diff against main",
+  "reviewedSha": "582d2b07dea15b6f3a0645e2f488352c27dd1a0c",
+  "reviewedTree": "6a7bed4fcc449447d4e827cf21e7bb28aac2eadb",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 0,
+  "planFindingCount": 0,
+  "findings": [],
+  "next_steps": []
+}

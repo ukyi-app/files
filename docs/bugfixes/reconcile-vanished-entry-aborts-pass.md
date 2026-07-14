@@ -3,7 +3,7 @@ bugfix: reconcile-vanished-entry-aborts-pass
 invariant-class: bugfix
 entry-track: bug
 review-track: standard
-pipeline-stage: executing
+pipeline-stage: verification
 issue-tracker: local
 symptom: "reconcile가 .objects 스냅샷을 뜬 뒤 항목별 stat/read를 하는 사이, 동시 put_stream이 .tmp-<uniq>를 최종 blob 이름으로 rename하면, 사라진 경로에 대한 stat/read가 ENOENT를 하드 io::Error로 전파해 **패스 전체가 Err로 중단**된다(그 항목만 건너뛰는 게 아니라). 쓰기 트래픽이 있는 동안 reconcile이 사실상 완주하지 못해 GC·temp 정리·격리가 안 돌고 디스크가 찬다."
 red-baseline: ac58bd7982d06e46f37cd4aa6a9c274d93bd8195
@@ -3145,3 +3145,11 @@ durability 0.55 · bypass 6, 치명 0/3)을 `pipeline-stage: design`인 채로 p
 **인간 판정**: `scope[]`에 **`CONTEXT.md` 추가**(커밋 `760e517`). 설계·행동 변경 0 — **선언만** 넓힌다.
 아티팩트: `docs/reviews/reconcile-vanished-entry-aborts-pass/structure-r1.json` (reviewedSha `6089361`).
 **라운드 2 실행 예정.**
+
+### Codex Structure Review — s2: clean — **approve · 0 findings**
+
+> *"**Ship**: S-1 is resolved. `CONTEXT.md` is now explicitly declared in `bugfix-lock.json` scope, and the
+> round-2 commits introduce no new critical issue."*
+
+아티팩트: `docs/reviews/reconcile-vanished-entry-aborts-pass/structure-r2.json` (reviewedSha `582d2b0`).
+**B3 frontier 열림** → `pipeline-stage: executing → verification`.
