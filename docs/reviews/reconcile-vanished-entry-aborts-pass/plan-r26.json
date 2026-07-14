@@ -1,0 +1,21 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "plan",
+  "verdict": "approve",
+  "summary": "Ship the plan. The lock’s red SHA/tree matches the committed RED record; both assertions pin the exact pass-abort symptom through the production call-site seam. The round-26 SSOT refactor leaves no materially stale normative gate count. Simpler alternative: use one source-aware NotFound helper at the existing call sites plus the post-loop guard, but that sacrifices the Entry/Absent boundary that prevents future raw-`?` regressions. No open questions.",
+  "planFile": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+  "planInDiff": true,
+  "reviewedFileCount": 1,
+  "target": "working tree diff",
+  "reviewedSha": "348190a3d3a52d61399dac4c31815693b478fafe",
+  "reviewedTree": "afd2c653e84660be50ee8ff5354917914e02c041",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 0,
+  "planFindingCount": 0,
+  "findings": [],
+  "next_steps": [
+    "Proceed with B-1 implementation and enforce the selftest, witness gate, regression, and characterization checks specified by the plan."
+  ]
+}
