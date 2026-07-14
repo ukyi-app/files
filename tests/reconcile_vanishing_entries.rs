@@ -231,20 +231,56 @@ async fn phase_e_entry_loop_survives_vanishing_entries() {
 // ══════════════════════════════════════════════════════════════════════════════════════════
 
 /// **W13-G.** `R = 12`(정본 **부재** ⇒ **rename 분기**) + `K = 12`(정본 **무손상** ⇒ **remove 분기**).
-/// **트리거**: `.gc-grave-*`가 `R+K` → 그 미만으로 떨어지는 순간(= 복구 루프가 **이미 돌고 있다**)
-/// 남은 무덤을 전부 삭제한다.
+/// **트리거**: `.gc-grave-*`가 `R+K` → 그 미만으로 떨어지는 순간(= 복구 루프가 **이미 돌고 있다**).
+/// **랑데부 도달을 단언한다** — 못 밟았으면 이 증인은 아무것도 증명하지 않는다.
 ///
 /// **항등식**: `gc_pending == K + (R − ‖escaped_R‖)` where
 /// `escaped_R = { r ∈ R : 정본 **부재** ∧ 무덤 **부재** }` (**날조 0** — 패스가 처리했다면 정본이 **있다**).
+///
+/// ## ⚠⚠ 두-분기 커버리지의 회계 — **r1/R-4가 고친 세 겹의 공허함**
+///
+/// **① 옛 `stepped_K`(= 정본 **존재** ∧ 무덤 **부재**)로 remove-분기 커버리지를 주장했다.** 그런데 K의
+/// 정본은 아무도 지우지 않고(항상 존재) 남은 무덤은 **테스트가 스스로 전부 지웠다**(항상 부재) ⇒
+/// **`stepped_K ≡ K`가 프로덕션이 무엇을 했든 참** ⇒ **공허**. **② `grave_count == 0`**도 같은 이유로
+/// **항상 참**이었다(우리가 전부 지웠다 · 새 무덤은 `gc_deleted == 0`이라 태어나지 않는다).
+/// **③ K의 무덤 내용을 정본과 **똑같이** 심었다** ⇒ **rename 분기로 잘못 가는 뮤턴트가 바이트-동일한 정본을
+/// 만들어** 디스크·stats 어디에도 흔적이 없다 ⇒ **분기 *선택*을 아무것도 핀하지 못했다.**
+///
+/// ## 정본 회계 — **K를 두 하위계급으로 쪼갠다**(하나의 무대가 세 가지를 한꺼번에 증명한다)
+///
+/// * **`K_KILL`(8) — remove 분기의 *소멸 창*.** 랑데부 후 **우리가 무덤을 지운다**.
+///   무덤 삭제는 **unlink vs unlink** ⇒ 프로덕션의 `e.remove()`와 우리의 `remove_file`은 **정확히 하나만
+///   이긴다** ⇒ **`killed_K` = 우리가 이긴 수 = 패스가 그 무덤을 *지우지 못한* 수**. 패스는 스냅샷의 **모든**
+///   항목을 방문하고(완주를 `await`한다) · `file_type()`은 **캐시된 `d_type`**을 돌려주며(Gone 팔 미발화) ·
+///   K의 정본은 **무손상**이다 ⇒ 그 항목은 반드시 **`blob_intact` → `e.remove()` → `NotFound` →
+///   `Seen::Gone`**을 탔다. ⇒ **`killed_K ≥ 1`이 remove-분기 소멸 창의 *날조 불가능한* 증거다**(Phase T의 논리).
+/// * **`K_KEEP`(4) — remove 분기의 *선택*과 *완주*.** 무덤을 **우리는 절대 건드리지 않는다** ⇒ 그 무덤을
+///   없앨 수 있는 것은 **프로덕션뿐이다** ⇒ *"`K_KEEP`의 무덤이 사라졌다"*는 **날조 불가능한 프로덕션 증거**다
+///   (무덤 루프를 no-op으로 만드는 뮤턴트는 여기서 죽는다).
+/// * **K의 무덤 내용 = *쓰레기*(정본과 다르다).** remove 분기는 무덤을 **지우기만** 하므로 정본은
+///   **바이트 그대로** 남는다. **rename으로 잘못 가는 뮤턴트는 쓰레기를 정본에 덮어써서** ⇒ 엔트리 루프가
+///   **격리**한다 ⇒ `read(정본) == seed` **바이트 동일성**과 `quarantined == 0`이 **둘 다 RED**가 된다.
+/// * **R(rename 분기) = unlink vs rename** — **둘 다 성공할 수 있다** ⇒ `killed_R`은 커버리지 조건으로
+///   **쓰지 않는다**(Phase E의 그 함정 그대로). rename 분기는 **사후 디스크**의 `escaped_R`로 센다.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn phase_g_recover_graves_survives_vanishing_graves() {
     const R: usize = 12;
-    const K: usize = 12;
+    /// 우리가 무덤을 지운다 ⇒ **소멸 창**(`killed_K`).
+    const K_KILL: usize = 8;
+    /// 우리가 **절대** 건드리지 않는다 ⇒ **프로덕션만이** 그 무덤을 없앨 수 있다(분기 선택 + 완주).
+    const K_KEEP: usize = 4;
+    const K: usize = K_KILL + K_KEEP;
     const ROUNDS_G: usize = 3;
     const MIN_STEPS_G: usize = 4;
 
+    /// K 무덤의 내용 — **정본과 다르다**(sha 불일치). rename으로 잘못 가면 정본이 오염된다.
+    fn k_garbage(round: usize, i: usize) -> Vec<u8> {
+        format!("g-GARBAGE-must-never-reach-a-blob-{round}-{i}").into_bytes()
+    }
+
     let mut escaped_total = 0usize;
-    let mut stepped_k_total = 0usize;
+    let mut killed_k_total = 0usize;
+    let mut killed_r_total = 0usize;
 
     for round in 0..ROUNDS_G {
         let (_d, s, l) = f14_store();
@@ -259,26 +295,62 @@ async fn phase_g_recover_graves_survives_vanishing_graves() {
             r_shas.push(sha);
         }
         // K 계급 — 무덤 **과** 무손상 정본이 둘 다 있다 ⇒ `blob_intact = true` ⇒ **remove 분기**.
+        // ⚠ **무덤 내용 = 쓰레기** ⇒ rename으로 잘못 가는 뮤턴트는 정본을 오염시켜 **격리**된다.
+        //   `k_seeds[i]`는 정본의 **기대 바이트**다(사후 바이트-동일성 단언에 쓴다).
         let mut k_shas = Vec::new();
+        let mut k_seeds = Vec::new();
         for i in 0..K {
             let seed = format!("g-remove-{round}-{i}");
-            let sha = plant_intact(&l, seed.as_bytes());
-            std::fs::write(grave_path(&l, &sha), seed.as_bytes()).unwrap();
+            let sha = plant_intact(&l, seed.as_bytes()); // 정본 = seed (내용 정합)
+            std::fs::write(grave_path(&l, &sha), k_garbage(round, i)).unwrap(); // 무덤 = **쓰레기**
             k_shas.push(sha);
+            k_seeds.push(seed.into_bytes());
         }
+        // K를 두 하위계급으로 나눈다(심는 순서는 위에서 이미 끝났다 — 분할은 **인덱스**로만 한다).
+        let k_kill = &k_shas[..K_KILL];
+        let k_keep = &k_shas[K_KILL..];
+        assert_eq!(k_keep.len(), K_KEEP, "무대 자기검증: K_KEEP");
         assert_eq!(grave_count(&l), R + K, "무대 자기검증: 무덤 {}개", R + K);
 
         // ── spawn → 랑데부(무덤 수 감소) → 남은 무덤 전부 삭제 ────────────────────────────
         let s2 = s.clone();
         let pass = tokio::spawn(async move { reconcile::run_once(&s2, KEEP, SETTLE).await });
 
+        // ★ **랑데부 도달을 단언한다**(r1/R-4) — 예산을 태워 먹고 그냥 진행하면, 복구 루프가 아직
+        //   시작도 안 한 무대에서 무덤을 지우는 것이 되어 창을 못 밟는다. **조용히 넘어가지 않는다.**
         let deadline = Instant::now() + SPIN_BUDGET;
-        while Instant::now() < deadline && grave_count(&l) >= R + K {
+        let mut rendezvous = false;
+        while Instant::now() < deadline {
+            if grave_count(&l) < R + K {
+                rendezvous = true;
+                break;
+            }
             tokio::task::yield_now().await;
         }
-        for sha in r_shas.iter().chain(k_shas.iter()) {
-            let _ = std::fs::remove_file(grave_path(&l, sha));
+        assert!(
+            rendezvous,
+            "랑데부 실패 — {SPIN_BUDGET:?} 안에 무덤 수가 {}에서 줄지 않았다(복구 루프가 돌지 않았다). \
+             round={round}",
+            R + K
+        );
+
+        // ★ **외부 삭제 성공을 계급별로 따로 센다**(r1/R-4). K는 **unlink vs unlink** ⇒ `killed_k`가
+        //   remove-분기 소멸 창의 **독립 관측치**다(위 doc 참조). R은 unlink vs rename ⇒ 커버리지에 쓰지 않는다.
+        // ⚠⚠ **`k_keep`의 무덤은 절대 건드리지 않는다** — 그것을 없앨 수 있는 건 **프로덕션뿐**이다.
+        let mut killed_r = 0usize;
+        for sha in &r_shas {
+            if std::fs::remove_file(grave_path(&l, sha)).is_ok() {
+                killed_r += 1;
+            }
         }
+        let mut killed_k = 0usize;
+        for sha in k_kill {
+            if std::fs::remove_file(grave_path(&l, sha)).is_ok() {
+                killed_k += 1; // **우리가** 이겼다 ⇒ 패스의 `e.remove()`는 `Gone`을 봤다
+            }
+        }
+        killed_r_total += killed_r;
+        killed_k_total += killed_k;
 
         let stats = pass
             .await
@@ -292,14 +364,30 @@ async fn phase_g_recover_graves_survives_vanishing_graves() {
             .iter()
             .filter(|sha| !exists(&l.blob_path(sha)) && !exists(&grave_path(&l, sha)))
             .count();
-        // stepped_K: 정본 **무손상** ∧ 무덤 **부재**(패스가 지웠든 우리가 지웠든 K는 이 상태로 끝난다).
-        let stepped_k = k_shas
-            .iter()
-            .filter(|sha| exists(&l.blob_path(sha)) && !exists(&grave_path(&l, sha)))
-            .count();
         escaped_total += escaped_r;
-        stepped_k_total += stepped_k;
 
+        // ★ **`K_KEEP` — 날조 불가능한 프로덕션 증거.** 우리는 이 무덤을 **건드리지 않았다** ⇒ 사라졌다면
+        //   **패스의 remove 분기가 지운 것**이다. 무덤 루프를 no-op으로 만드는 뮤턴트는 **여기서 죽는다**.
+        for sha in k_keep {
+            assert!(
+                !exists(&grave_path(&l, sha)),
+                "K_KEEP의 무덤이 남아 있다 — 우리는 건드리지 않았으므로 **패스가 remove 분기를 타지 않았다**. \
+                 round={round} sha={sha}"
+            );
+        }
+        // ★ **바이트 동일성** — remove 분기는 무덤을 *지우기만* 한다 ⇒ 정본은 **그대로**다.
+        //   rename으로 잘못 가는 뮤턴트는 **쓰레기 무덤을 정본에 덮어쓴다** ⇒ 여기서 RED(그리고 quarantined도).
+        for (sha, seed) in k_shas.iter().zip(k_seeds.iter()) {
+            let got = std::fs::read(l.blob_path(sha))
+                .unwrap_or_else(|e| panic!("K의 정본은 살아남는다. round={round} sha={sha}: {e}"));
+            assert_eq!(
+                &got, seed,
+                "K의 정본이 **오염**됐다 — 무덤(쓰레기)이 정본을 덮어썼다 = remove 분기가 아니라 \
+                 **rename 분기**를 탔다. round={round} sha={sha}"
+            );
+        }
+        // 무덤은 하나도 남지 않는다. ⚠ 이 단언의 힘은 **`K_KEEP` 덕분에** 생긴다 — R·K_KILL만 있었다면
+        // 우리가 전부 지웠으므로 **항상 참**(= 공허)이었다(r1/R-4 ②).
         assert_eq!(
             grave_count(&l),
             0,
@@ -319,19 +407,25 @@ async fn phase_g_recover_graves_survives_vanishing_graves() {
         );
     }
 
-    // ★ **두 분기를 모두 덮었음을 증인이 스스로 증명한다.**
+    // ★ **두 분기를 모두 덮었음을 증인이 스스로 증명한다** — **날조 불가능한 관측치로만**(r1/R-4).
     assert!(
         escaped_total >= 1,
-        "Phase G가 **rename 분기**의 소멸 창을 한 번도 밟지 못했다(escaped_R={escaped_total})"
+        "Phase G가 **rename 분기**의 소멸 창을 한 번도 밟지 못했다(escaped_R={escaped_total}) — \
+         패스가 전부 처리해 버렸다는 뜻이다(랑데부가 너무 늦다). 초록으로 넘기지 않는다"
+    );
+    // ⚠ `killed_K`(우리 unlink의 승리 수)만이 remove 분기의 증거다 — **정본/무덤의 사후 존재 여부가
+    //   아니다**(그것은 프로덕션이 무엇을 했든 참이라 **공허했다** — r1/R-4).
+    assert!(
+        killed_k_total >= 1,
+        "Phase G가 **remove 분기**의 소멸 창을 한 번도 밟지 못했다(killed_K={killed_k_total}, \
+         killed_R={killed_r_total}) ⇒ 패스의 `e.remove()`가 `Seen::Gone`을 한 번도 보지 못했다 ⇒ \
+         이 증인은 **remove 분기를 raw `?`로 되돌리는 뮤턴트와 구별되지 않는다**. 초록으로 넘기지 않는다"
     );
     assert!(
-        stepped_k_total >= 1,
-        "Phase G가 **remove 분기**를 한 번도 밟지 못했다(stepped_K={stepped_k_total})"
-    );
-    assert!(
-        escaped_total + stepped_k_total >= MIN_STEPS_G,
-        "Phase G의 총 스텝이 부족하다({} < {MIN_STEPS_G}) — 랑데부가 깨졌다",
-        escaped_total + stepped_k_total
+        escaped_total + killed_k_total >= MIN_STEPS_G,
+        "Phase G의 총 스텝이 부족하다({} < {MIN_STEPS_G}) — 랑데부가 깨졌다(escaped_R={escaped_total} · \
+         killed_K={killed_k_total})",
+        escaped_total + killed_k_total
     );
 }
 
