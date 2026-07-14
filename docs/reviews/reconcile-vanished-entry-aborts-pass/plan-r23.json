@@ -1,0 +1,33 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "plan",
+  "verdict": "needs-attention",
+  "summary": "Do not ship: the Round 23 ignored-test gate is still bypassable. The committed RED record otherwise matches `red.sha` and fails for the intended pass-abort symptom. Simpler alternative: match the delimited field `; 0 ignored;` exactly instead of parsing with an unanchored substring. No open question.",
+  "planFile": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+  "planInDiff": true,
+  "reviewedFileCount": 1,
+  "target": "working tree diff",
+  "reviewedSha": "2fee6d6e4fcf5152bff0fa7870fbbef909e83ea6",
+  "reviewedTree": "1027801bb98a637f758d1ed7d03e5e5c947d2edf",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 1,
+  "planFindingCount": 1,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "Ignored gate accepts counts ending in zero",
+      "body": "`grep -vc '0 ignored'` treats `10 ignored`, `20 ignored`, and `100 ignored` as valid because each contains the substring `0 ignored`. Discovery still lists ignored tests, so ten required witnesses—including the blocking witnesses—can be disabled while the suite exits successfully and this gate reports zero violations. This contradicts the following claim that every nonzero ignored count is caught.",
+      "file": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+      "line_start": 1641,
+      "line_end": 1653,
+      "confidence": 1,
+      "recommendation": "Match a delimited zero field such as `; 0 ignored;` or parse the numeric field and compare it to zero. Add a demonstrated mutant with exactly 10 ignored witnesses.",
+      "isPlanFinding": true
+    }
+  ],
+  "next_steps": [
+    "Correct the parser and record both 1-ignored and 10-ignored failure demonstrations before re-review."
+  ]
+}
