@@ -1,11 +1,23 @@
 use super::atomic;
-use super::pins::{Hooks, PassGuard, Settled};
+use super::pins::{GraveOutcome, Hooks, PassGuard, Settled};
 use super::Store;
-use crate::layout::{classify_objects_entry, grave_sha, Layout, ObjectsEntry};
+use crate::layout::{grave_sha, Layout, ObjectsEntry};
 use crate::meta::ObjectMeta;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
+use std::io::ErrorKind;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// **부재의 증거 · 소멸 계수기** — `pins`는 이 모듈을 **경로로 지나갈 수 없다**(private 모듈).
+mod absence;
+/// 스냅샷 항목 — `.objects`를 만지는 **유일한 통로**(`read_dir` 포함).
+mod entry;
+
+// ⚠⚠ **자유함수는 타입 재수출을 타고 오지 않는다** — `rename_durable_source_checked`를 빼면
+// `pins::grave`가 `E0425`로 죽는다(라운드 17의 컴파일 증거). 그리고 **재수출은 봉인을 넓히지 않는다**:
+// `pins`에서 `Vanished::new()`/`.get()`은 `E0624`, `Absent(())`는 `E0423`이다.
+pub(crate) use absence::{rename_durable_source_checked, Absent, Renamed, Vanished};
+use entry::{Entry, Seen};
 
 /// reconciliation 1회 결과(관측성·테스트용).
 ///
@@ -90,37 +102,57 @@ pub(super) async fn collect_referenced(
 ///
 /// 어느 경우든 이번 패스의 `Blob` 분기가 내용을 재검증한다. 반환 = 정본으로 되돌린 무덤 수.
 /// clean 트리에서는 **no-op**이다(무덤이 없으므로).
-pub(super) async fn recover_graves(layout: &Layout) -> std::io::Result<usize> {
-    let objects = layout.objects_dir();
-    let mut entries = Vec::new();
-    let mut rd = tokio::fs::read_dir(&objects).await?;
-    while let Some(e) = rd.next_entry().await? {
-        entries.push(e);
-    }
+///
+/// ⚠ **패스 집계(`&Vanished`)를 관통시킨다** — 무덤 루프의 부재도 **같은 하나의 집계**를 올린다
+/// (지역 집계를 만들면 그 발행이 버려지고 루프-후 가드가 눈이 먼다 — r15/P-27).
+/// **별도 가드는 넣지 않는다**: `run_once_at`의 `read_dir(&objects).await?`가 이미 가드다(§D-②③).
+pub(super) async fn recover_graves(
+    layout: &Layout,
+    hooks: &Hooks,
+    vanished: &Vanished,
+) -> std::io::Result<usize> {
+    let entries = Entry::snapshot(&layout.objects_dir(), vanished).await?; // ← 이 `?` = 오늘의 가드
+    recover_graves_from(layout, hooks, entries).await
+}
 
+/// 스냅샷 이음매를 연 분해(순수 extract-function — syscall 순서·횟수·행동 전부 동일).
+async fn recover_graves_from<'v>(
+    layout: &Layout,
+    hooks: &Hooks,
+    entries: Vec<Entry<'v>>,
+) -> std::io::Result<usize> {
+    let objects = layout.objects_dir();
     let mut recovered = 0usize;
     for e in entries {
-        let name = e.file_name();
-        let name = name.to_string_lossy().to_string();
-        let Some(sha) = grave_sha(&name).map(str::to_owned) else {
+        let Some(sha) = grave_sha(e.name()).map(str::to_owned) else {
             continue; // 무덤 이름이 아니다
         };
         // 무덤은 rename으로만 태어난다 → 디렉터리일 수 없다. 디렉터리면 **건드리지 않는다**
         // (무검증 파괴 경로 제거).
-        if e.file_type().await?.is_dir() {
+        let Seen::Present(ft) = e.file_type().await? else {
+            continue; // 스냅샷 이후 소멸 — 복구할 무덤이 없다(d_type 캐시 때문에 사실상 도달 불가)
+        };
+        if ft.is_dir() {
             continue;
         }
-        let grave = e.path();
+        // **결정적 배리어**(9번째 훅) — 무덤 항목 하나당 정확히 한 번, 두 분기 **이전**.
+        // prod = `None` ⇒ 즉시 반환(syscall 0 · 상태 0) ⇒ 관측 행동 변화 0.
+        hooks.pre_recover_grave(&sha).await;
         let blob = layout.blob_path(&sha);
+        // ⚠ 스냅샷 항목이 **아니다** ⇒ 축자 보존(F-33).
         let blob_intact = matches!(
             tokio::fs::read(&blob).await,
             Ok(b) if hex::encode(Sha256::digest(&b)) == sha
         );
         if blob_intact {
-            tokio::fs::remove_file(&grave).await?;
+            let Seen::Present(()) = e.remove().await? else {
+                continue; // 무덤이 사라졌다 — 지울 것이 없다
+            };
             atomic::fsync_dir(&objects).await?;
         } else {
-            atomic::rename_durable(&grave, &blob, &objects).await?;
+            let Seen::Present(()) = e.rename_durable_to(&blob, &objects).await? else {
+                continue; // 무덤이 사라졌다 — 되돌릴 것이 없다
+            };
             recovered += 1;
             // 관측성: 잔존 무덤을 **정본으로 되돌렸다**. 무덤이 남아 있었다는 것은 지난 패스가
             // `?`로 탈출했거나 프로세스가 죽었다는 뜻이다 — fail-CLOSED가 **작동한** 증거다.
@@ -147,7 +179,10 @@ async fn run_once_at(
     // 패스 등록 → 무덤 복구 → 참조 스냅샷. 이 셋의 순서는 PassGuard가 소유한다(P5).
     // ⚠ `recover_graves`가 `collect_referenced`**보다 먼저** 돈다 — 뒤집으면 크래시 창에 커밋된
     //    포인터가 refs에 안 잡힌다(근거: `PassGuard::begin`의 순서 제약 ③).
-    let pass = PassGuard::begin(store, settle_timeout).await?;
+    // ★ **크레이트 전체에서 유일한 `Vanished::new()` 호출부.** 이 하나의 집계가 무덤 루프
+    //   (`recover_graves`) · 엔트리 루프(`Entry`) · `grave()`를 **관통**한다 — 전부 `&`로 빌리기만 한다.
+    let vanished = Vanished::new();
+    let pass = PassGuard::begin(store, settle_timeout, &vanished).await?;
     // 관측성 — **`ReconcileStats`에는 필드를 추가하지 않는다**(tracing 전용). clean 트리에서는 0이므로
     // 침묵한다. 0이 아니라는 것은 **지난 패스가 무덤을 흘렸다**(크래시/`?` 탈출)는 뜻이며, 이 패스가
     // 그것을 정본으로 되돌렸다는 뜻이다 — 개별 sha는 `recover_graves`가 이미 로그했다.
@@ -169,25 +204,17 @@ async fn run_once_at(
     let grace_secs = gc_grace.as_secs();
     let corrupt_dir = layout.corrupt_dir();
 
-    // .objects 직속 항목 스냅샷(순회 중 변경 회피)
-    let mut entries = Vec::new();
-    let mut rd = tokio::fs::read_dir(&objects).await?;
-    while let Some(e) = rd.next_entry().await? {
-        entries.push(e);
-    }
-
-    for e in entries {
-        let p = e.path();
-        let name = e.file_name();
-        let name = name.to_string_lossy().to_string();
-        // 이름-전용 분류(I/O 없음). Temp가 Blob보다 우선하고 대문자 hex도 Blob이다
-        // (정규화 없음 — 내용 검증에서 격리되는 현행 B6 보존).
-        let class = classify_objects_entry(&name);
+    // .objects 직속 항목 스냅샷(순회 중 변경 회피) — `read_dir`/`next_entry`는 `Entry::snapshot` 안이다.
+    // 이름-전용 분류(I/O 없음)도 그 안에서 오늘과 같은 순서로 일어난다. Temp가 Blob보다 우선하고
+    // 대문자 hex도 Blob이다(정규화 없음 — 내용 검증에서 격리되는 현행 B6 보존).
+    for e in Entry::snapshot(&objects, &vanished).await? {
+        let class = e.class();
         // O1: 예약 이름(.gc-pending.json/.corrupt)은 file_type 조회 **전에** continue.
         // stat을 걸지 않는 현행 syscall 순서를 그대로 유지한다.
         if matches!(class, ObjectsEntry::Reserved) {
             continue;
         }
+        let name = e.name().to_owned();
         // **결정적 배리어** — 이 항목의 **첫 FS 접촉 직전**(= `file_type()` 이전 · 예약 이름 `continue`
         // **이후** ⇒ O1의 "예약 이름에는 stat을 걸지 않는다"가 보존된다). prod = `None` ⇒ 즉시 반환
         // (syscall 0 · 상태 변경 0) ⇒ **관측 행동 변화 0**.
@@ -196,26 +223,39 @@ async fn run_once_at(
         // 반환값은 `()`다 → 이 훅은 아래 분기 판정에 **개입할 수 없다**(P4 봉인 유지).
         pass.pins().hooks().pre_entry(&name).await;
         // O2: 디렉터리 스킵은 temp/blob 처리보다 앞.
-        let ft = e.file_type().await?;
+        let Seen::Present(ft) = e.file_type().await? else {
+            continue; // 스냅샷 이후 소멸(d_type 캐시 때문에 사실상 도달 불가)
+        };
         if ft.is_dir() {
             continue;
         }
         match class {
             // 3) temp 잔재: mtime이 grace보다 오래된 것만 삭제(활성 스트리밍 보존)
             ObjectsEntry::Temp => {
-                let mtime = e.metadata().await?.modified().unwrap_or(now);
+                let Seen::Present(m) = e.metadata().await? else {
+                    continue; // 스냅샷 이후 소멸 — 우리가 지울 것이 없다
+                };
+                let mtime = m.modified().unwrap_or(now);
                 let age = now.duration_since(mtime).unwrap_or_default();
                 if age.as_secs() > grace_secs {
-                    tokio::fs::remove_file(&p).await?;
-                    stats.temps_deleted += 1;
+                    match e.remove().await? {
+                        // 증가는 **이 한 곳뿐**이다.
+                        Seen::Present(()) => stats.temps_deleted += 1,
+                        Seen::Gone(_) => continue, // 우리가 지운 게 아니다
+                    }
                 }
             }
             ObjectsEntry::Blob => {
                 // 4) 무결성: 내용 sha == 파일명 검증, 불일치 → 격리
-                let content = tokio::fs::read(&p).await?;
+                // ⚠ `pending.remove`를 여기에 추가하지 않는다(§E — 오늘의 원장 의미론 보존).
+                let Seen::Present(content) = e.read().await? else {
+                    continue; // 스냅샷 이후 소멸 — 검증할 정본이 없다
+                };
                 if hex::encode(Sha256::digest(&content)) != name {
                     atomic::mkdir_p_durable(&corrupt_dir).await?;
-                    tokio::fs::rename(&p, corrupt_dir.join(&name)).await?;
+                    let Seen::Present(()) = e.rename_into(&corrupt_dir).await? else {
+                        continue; // 격리할 정본이 사라졌다
+                    };
                     atomic::fsync_dir(&objects).await?;
                     pending.remove(&name);
                     stats.quarantined += 1;
@@ -235,7 +275,12 @@ async fn run_once_at(
                             pass.pins().hooks().pre_grave(&name).await;
                             // `settle()`은 `Graved`의 메서드이고 `Graved`는 `grave()`의 rename이
                             // 성공해야만 태어난다 → 두 호출을 뒤바꾸는 뮤턴트는 **컴파일되지 않는다**.
-                            match pass.grave(&name).await?.settle().await? {
+                            let g = match pass.grave(&name, &vanished).await? {
+                                // 회수할 정본이 스냅샷 이후 사라졌다 — 무덤은 태어나지 않았다.
+                                GraveOutcome::SourceGone(_) => continue,
+                                GraveOutcome::Moved(g) => g,
+                            };
+                            match g.settle().await? {
                                 Settled::Reaped => {
                                     pending.remove(&name);
                                     stats.gc_deleted += 1;
@@ -266,6 +311,21 @@ async fn run_once_at(
         }
     }
 
+    // ── 루프-후 컨테이너 가드 ────────────────────────────────────────────────────────────
+    // ⚠ **반드시 `write_atomic` 이전**: `write_atomic`의 첫 줄 `mkdir_p_durable(parent)`가 `.objects`를
+    //    **되살린다** ⇒ 뒤로 옮기면 가드는 **영영 참**이 된다(M-GUARD-AFTER).
+    // ⚠ **`vanished.get() > 0`으로 게이트한다**: 게이트가 없으면 **꼬리 파괴**(소멸 0 · 오늘 조용한
+    //    `Ok`)가 `Err`로 뒤집혀 **두 번째 관측 플립**이 된다(M-GUARD-ALWAYS).
+    // ⚠ **`metadata`(follow)** — `symlink_metadata`면 `.objects`가 심링크→dir인 정상 배포를 죽인다.
+    if vanished.get() > 0 {
+        match tokio::fs::metadata(&objects).await {
+            Ok(m) if m.is_dir() => {}
+            Ok(_) => return Err(std::io::Error::from(ErrorKind::NotADirectory)),
+            // **무가공**. `.objects` 부재 = ENOENT/2 = 오늘과 같은 kind·errno(원장 미발행).
+            Err(e) => return Err(e),
+        }
+    }
+
     // 존재하지 않는 blob의 pending 엔트리 정리
     let mut cleaned = HashMap::new();
     for (sha, t) in pending.into_iter() {
@@ -280,7 +340,7 @@ async fn run_once_at(
 }
 
 /// **테스트 전용 다리(S-3).** B-2의 배리어 증인은 **두 기능을 같은 테스트 안에서** 요구한다:
-/// ① `Hooks` 구성 — 8개 필드가 **`pins.rs` private**이라 그 모듈(과 그 `mod tests`) 안에서만
+/// ① `Hooks` 구성 — 9개 필드가 **`pins.rs` private**이라 그 모듈(과 그 `mod tests`) 안에서만
 /// 리터럴로 지을 수 있다 · ② **주입형 시각**의 reconciler — `run_once_at`은 **이 모듈 private**이다.
 /// 이 둘이 형제 private 모듈로 갈라져 있으면 `pins.rs`의 증인은 훅을 짓고도 시계를 주입할 수 없고,
 /// `reconcile.rs`의 증인은 그 반대다 → B-2의 안무(§6: `run_once_at` + `Hooks{pre_grave, post_grave, …}`)를
@@ -288,7 +348,7 @@ async fn run_once_at(
 ///
 /// **프로덕션 표면은 한 글자도 넓어지지 않는다**:
 /// * `run_once_at`은 여전히 **이 모듈 private**(`pub` 아님) — 밖에서 부를 수 없다.
-/// * 보호 상태(`landed`/`live`)와 `Hooks`의 **8개 필드는 `pins.rs` private 그대로**다.
+/// * 보호 상태(`landed`/`live`)와 `Hooks`의 **9개 필드는 `pins.rs` private 그대로**다.
 /// * 이 래퍼는 `#[cfg(test)]` → **릴리스 빌드에 존재하지 않는다.**
 /// * 위임 외에 **아무 일도 하지 않는다** — 주입형-시각 안무를 약화시키지 않는다.
 #[cfg(test)]
@@ -354,7 +414,9 @@ mod tests {
             .put("b", "a/b.zip", "x", "u", b"nested".to_vec())
             .await
             .unwrap();
-        let stats = run_once(&s, Duration::from_secs(3600), SETTLE).await.unwrap();
+        let stats = run_once(&s, Duration::from_secs(3600), SETTLE)
+            .await
+            .unwrap();
         assert!(
             tokio::fs::try_exists(s.blob_path(&m.sha256)).await.unwrap(),
             "참조된 중첩 키 blob은 생존해야 함"
@@ -368,16 +430,24 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let root = d.path();
         let s = Store::new(root.to_path_buf());
-        tokio::fs::create_dir_all(root.join(".objects")).await.unwrap();
+        tokio::fs::create_dir_all(root.join(".objects"))
+            .await
+            .unwrap();
         let content = b"orphan".to_vec();
         let sha = hex_sha(&content);
         write_obj_file(root, &sha, &content).await;
         let grace = Duration::from_secs(100);
         let t0 = SystemTime::now();
         run_once_at(&s, t0, grace, SETTLE).await.unwrap(); // 최초 관측 → pending
-        assert!(tokio::fs::try_exists(root.join(".objects").join(&sha)).await.unwrap());
-        let stats = run_once_at(&s, t0 + Duration::from_secs(101), grace, SETTLE).await.unwrap();
-        assert!(!tokio::fs::try_exists(root.join(".objects").join(&sha)).await.unwrap());
+        assert!(tokio::fs::try_exists(root.join(".objects").join(&sha))
+            .await
+            .unwrap());
+        let stats = run_once_at(&s, t0 + Duration::from_secs(101), grace, SETTLE)
+            .await
+            .unwrap();
+        assert!(!tokio::fs::try_exists(root.join(".objects").join(&sha))
+            .await
+            .unwrap());
         assert_eq!(stats.gc_deleted, 1);
     }
 
@@ -386,16 +456,22 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let root = d.path();
         let s = Store::new(root.to_path_buf());
-        tokio::fs::create_dir_all(root.join(".objects")).await.unwrap();
+        tokio::fs::create_dir_all(root.join(".objects"))
+            .await
+            .unwrap();
         let content = b"fresh".to_vec();
         let sha = hex_sha(&content);
         write_obj_file(root, &sha, &content).await;
         let grace = Duration::from_secs(3600);
         let t0 = SystemTime::now();
         run_once_at(&s, t0, grace, SETTLE).await.unwrap();
-        let stats = run_once_at(&s, t0 + Duration::from_secs(1), grace, SETTLE).await.unwrap();
+        let stats = run_once_at(&s, t0 + Duration::from_secs(1), grace, SETTLE)
+            .await
+            .unwrap();
         assert!(
-            tokio::fs::try_exists(root.join(".objects").join(&sha)).await.unwrap(),
+            tokio::fs::try_exists(root.join(".objects").join(&sha))
+                .await
+                .unwrap(),
             "grace 내 최근 미참조 blob은 보존되어야 함"
         );
         assert_eq!(stats.gc_deleted, 0);
@@ -406,13 +482,25 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let root = d.path();
         let s = Store::new(root.to_path_buf());
-        tokio::fs::create_dir_all(root.join(".objects")).await.unwrap();
+        tokio::fs::create_dir_all(root.join(".objects"))
+            .await
+            .unwrap();
         let bad_name = "0".repeat(64); // 이름 ≠ sha(content)
         write_obj_file(root, &bad_name, b"not matching content").await;
-        let stats = run_once(&s, Duration::from_secs(3600), SETTLE).await.unwrap();
+        let stats = run_once(&s, Duration::from_secs(3600), SETTLE)
+            .await
+            .unwrap();
         assert_eq!(stats.quarantined, 1);
-        assert!(!tokio::fs::try_exists(root.join(".objects").join(&bad_name)).await.unwrap());
-        assert!(tokio::fs::try_exists(root.join(".objects").join(".corrupt").join(&bad_name)).await.unwrap());
+        assert!(
+            !tokio::fs::try_exists(root.join(".objects").join(&bad_name))
+                .await
+                .unwrap()
+        );
+        assert!(
+            tokio::fs::try_exists(root.join(".objects").join(".corrupt").join(&bad_name))
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]
@@ -424,16 +512,27 @@ mod tests {
         tokio::fs::create_dir_all(&objects).await.unwrap();
         write_obj_file(root, ".tmp-stream", b"in flight").await;
         let grace = Duration::from_secs(100);
-        run_once_at(&s, SystemTime::now(), grace, SETTLE).await.unwrap();
-        assert!(
-            tokio::fs::try_exists(objects.join(".tmp-stream")).await.unwrap(),
-            "최근 temp는 보존"
-        );
-        let stats = run_once_at(&s, SystemTime::now() + Duration::from_secs(300), grace, SETTLE)
+        run_once_at(&s, SystemTime::now(), grace, SETTLE)
             .await
             .unwrap();
         assert!(
-            !tokio::fs::try_exists(objects.join(".tmp-stream")).await.unwrap(),
+            tokio::fs::try_exists(objects.join(".tmp-stream"))
+                .await
+                .unwrap(),
+            "최근 temp는 보존"
+        );
+        let stats = run_once_at(
+            &s,
+            SystemTime::now() + Duration::from_secs(300),
+            grace,
+            SETTLE,
+        )
+        .await
+        .unwrap();
+        assert!(
+            !tokio::fs::try_exists(objects.join(".tmp-stream"))
+                .await
+                .unwrap(),
             "오래된 temp는 삭제"
         );
         assert_eq!(stats.temps_deleted, 1);
@@ -481,7 +580,9 @@ mod tests {
             .unwrap();
         write_pointer(&root, "b", "k", &sha, good.len() as u64).await;
 
-        let stats = run_once(&s, Duration::from_secs(3600), SETTLE).await.unwrap();
+        let stats = run_once(&s, Duration::from_secs(3600), SETTLE)
+            .await
+            .unwrap();
         assert_eq!(
             stats,
             ReconcileStats {
@@ -492,9 +593,14 @@ mod tests {
                 quarantined: 0, // 무덤이 정본을 덮어썼다 → **격리할 것이 없다**
             }
         );
-        let (_, got) = s.get_bytes("b", "k").await.expect("좋은 사본이 살아남아야 한다");
+        let (_, got) = s
+            .get_bytes("b", "k")
+            .await
+            .expect("좋은 사본이 살아남아야 한다");
         assert_eq!(got, good);
-        assert!(!tokio::fs::try_exists(s.layout().grave_path(&sha)).await.unwrap());
+        assert!(!tokio::fs::try_exists(s.layout().grave_path(&sha))
+            .await
+            .unwrap());
     }
 
     /// **T-Q3 — `is_dir` 가드.** 무덤은 rename으로만 태어나므로 **디렉터리일 수 없다** —
@@ -507,9 +613,13 @@ mod tests {
         let s = Store::new(root.clone());
         let content = b"tq3-payload".to_vec();
         let sha = hex_sha(&content);
-        tokio::fs::create_dir_all(s.layout().grave_path(&sha)).await.unwrap();
+        tokio::fs::create_dir_all(s.layout().grave_path(&sha))
+            .await
+            .unwrap();
 
-        let stats = run_once(&s, Duration::from_secs(3600), SETTLE).await.unwrap();
+        let stats = run_once(&s, Duration::from_secs(3600), SETTLE)
+            .await
+            .unwrap();
         assert_eq!(
             stats,
             ReconcileStats::default(),
@@ -520,7 +630,9 @@ mod tests {
             "정본이 **디렉터리가 되지 않았다**"
         );
         assert!(
-            tokio::fs::try_exists(s.layout().grave_path(&sha)).await.unwrap(),
+            tokio::fs::try_exists(s.layout().grave_path(&sha))
+                .await
+                .unwrap(),
             "무덤 모양 디렉터리는 그대로 남는다(건드리지 않는다)"
         );
 

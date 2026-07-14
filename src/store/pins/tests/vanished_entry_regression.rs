@@ -40,8 +40,8 @@
 //!
 //! ## 이 모듈이 `pins::tests`의 **자식**인 이유
 //!
-//! ① `Hooks`의 7개 필드는 `pins` private이다 → 훅을 리터럴로 짓는 증인은 **`pins`의 자손**이어야 한다
-//!    (`Hooks`를 8필드로 늘리는 것은 금지다 — `pins.rs:62`).
+//! ① `Hooks`의 9개 필드는 `pins` private이다 → 훅을 리터럴로 짓는 증인은 **`pins`의 자손**이어야 한다
+//!    (필드 계수와 "왜 두 번째 플립이 아닌가"의 논증은 `pins.rs`의 `Hooks` doc이 소유한다).
 //! ② 랑데부 프리미티브(`arrived`/`finish_pass`/`probe_still_waiting`…)는 `pins::tests` private이다 →
 //!    **형제 모듈은 재사용할 수 없다**(그래서 진단 산출물은 그것들을 복사했었다 — 위험한 반복구의 복제).
 //! `tests`의 **자식**이면 ①②를 **둘 다** 만족한다: 기존 테스트의 가시성을 넓히지도, 훅을 늘리지도,
@@ -113,16 +113,21 @@ async fn stage(
     let d = tempfile::tempdir().unwrap();
     let root = d.path().to_path_buf();
     let s = Store::with_hooks(root.clone(), hooks);
-    tokio::fs::create_dir_all(root.join(".objects")).await.unwrap();
+    tokio::fs::create_dir_all(root.join(".objects"))
+        .await
+        .unwrap();
 
     let mut shas = Vec::new();
     for i in 0..ORPHANS {
         shas.push(plant_orphan_blob(&s, format!("f14-orphan-{i}").as_bytes()).await);
     }
     for i in 0..TEMPS {
-        atomic::write_atomic(&s.layout().temp_blob_path(&format!("f14-{i}")), b"in flight")
-            .await
-            .unwrap();
+        atomic::write_atomic(
+            &s.layout().temp_blob_path(&format!("f14-{i}")),
+            b"in flight",
+        )
+        .await
+        .unwrap();
     }
     let t0 = SystemTime::now();
     let refs: Vec<&str> = shas.iter().map(String::as_str).collect();
@@ -205,11 +210,11 @@ async fn reconcile_pass_survives_an_entry_that_vanishes_after_the_snapshot() {
     assert_eq!(
         stats,
         ReconcileStats {
-            referenced: 0,       // 포인터를 만들지 않았다 — **구조적으로** 0
-            gc_deleted: 1,       // 파킹된 orphan 1개만 회수된다(나머지는 **사라졌으므로 skip**)
-            gc_pending: 0,       // 사라진 blob의 tombstone은 정리된다
-            temps_deleted: 0,    // temp는 grace 안이었고, 게다가 사라졌다 → 삭제 대상 아님
-            quarantined: 0,      // 비트로트 없음
+            referenced: 0,    // 포인터를 만들지 않았다 — **구조적으로** 0
+            gc_deleted: 1,    // 파킹된 orphan 1개만 회수된다(나머지는 **사라졌으므로 skip**)
+            gc_pending: 0,    // 사라진 blob의 tombstone은 정리된다
+            temps_deleted: 0, // temp는 grace 안이었고, 게다가 사라졌다 → 삭제 대상 아님
+            quarantined: 0,   // 비트로트 없음
         },
         "사라진 항목은 **건너뛰고** 나머지는 정상 처리된다"
     );
@@ -234,7 +239,10 @@ async fn reconcile_pass_control_without_vanishing_entries_is_green() {
         tokio::spawn(async move { reconcile::run_once_at_for_test(&s2, t0, GRACE, SETTLE).await });
 
     let parked = arrived(&mut rx).await;
-    assert!(shas.contains(&parked), "파킹된 sha는 우리가 심은 orphan 중 하나다");
+    assert!(
+        shas.contains(&parked),
+        "파킹된 sha는 우리가 심은 orphan 중 하나다"
+    );
     probe_still_waiting(&mut gc).await;
 
     // **삭제하지 않는다** — 증인과의 차이는 이것뿐이다.

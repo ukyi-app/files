@@ -41,6 +41,9 @@
 
 use super::atomic;
 use super::locks::KeyGuard;
+// ⚠ `pins`는 `reconcile::absence`를 **경로로 지나갈 수 없다**(private 모듈) ⇒ 재수출을 통해서만 닿는다.
+// 여기서 `Vanished::new()`/`.get()`은 `E0624`, `Absent(())`는 `E0423`다 — **빌려서 전달만** 한다.
+use super::reconcile::{rename_durable_source_checked, Absent, Renamed, Vanished};
 use super::Store;
 use crate::layout::Layout;
 use futures::future::BoxFuture;
@@ -59,25 +62,35 @@ type AsyncHook = Arc<dyn Fn(&str) -> BoxFuture<'static, ()> + Send + Sync>;
 type SyncHook = Arc<dyn Fn(&str) + Send + Sync>;
 type FailHook = Arc<dyn Fn(&str) -> std::io::Result<()> + Send + Sync>;
 
-/// 필드는 정확히 8개다. 늘리지 마라.
+/// 필드는 정확히 9개다. 늘리지 마라.
 ///
-/// # ⚠ 8번째 훅 `pre_entry` — **왜 이것이 두 번째 플립이 아닌가**
+/// # ⚠ 8번째 훅 `pre_entry` · 9번째 훅 `pre_recover_grave` — **왜 이것이 두 번째 플립이 아닌가**
 ///
-/// F-14의 증상은 `.objects` 항목 루프의 **Temp 분기**(`reconcile.rs`의 `e.metadata().await?`)에서
-/// 난다. 그 분기에 **결정적으로** park를 걸 수 있는 훅이 7개 중 **하나도 없었다**(`during_collect`는
-/// 스냅샷 **이전**, `post_observe`는 **put 경로**, `pre_grave`/`post_grave`는 **Blob 분기 전용**)
-/// ⇒ Temp 분기의 RED 증인은 **8번째 훅 없이는 쓸 수 없다**. 그래서 연다.
+/// **8번째 `pre_entry`**: F-14의 증상은 `.objects` 항목 루프의 **Temp 분기**(`reconcile.rs`의
+/// `e.metadata().await?`)에서 난다. 그 분기에 **결정적으로** park를 걸 수 있는 훅이 기존 7개 중
+/// **하나도 없었다**(`during_collect`는 스냅샷 **이전**, `post_observe`는 **put 경로**,
+/// `pre_grave`/`post_grave`는 **Blob 분기 전용**) ⇒ Temp 분기의 RED 증인은 **8번째 훅 없이는 쓸 수
+/// 없다**. 그래서 열었다.
 ///
-/// **관측 행동 변화는 0이다**(기존 7개 훅과 **같은 논증**):
-/// * 프로덕션 `Hooks`는 `BlobPins::new()` → `Hooks::default()` ⇒ `pre_entry = None`
-///   ⇒ `hooks.pre_entry(&name).await`는 **즉시 반환**한다: syscall 0 · fs 접촉 0 · 상태 변경 0 · 로그 0.
+/// **9번째 `pre_recover_grave`**(F-14/P-5): 구조적 불변식만으로는 *"헬퍼는 초록인데 프로덕션이 그
+/// 헬퍼를 안 쓴다"*를 못 잡는다 ⇒ 증인이 **진짜 프로덕션 진입점**(`PassGuard::begin` →
+/// `recover_graves`)을 타야 하고, 그러려면 무덤 복구 루프 안에 배리어가 필요한데 **그 구간에서
+/// 발화하는 훅이 하나도 없었다**. 그래서 연다.
+///
+/// **관측 행동 변화는 0이다**(기존 훅들과 **같은 논증**):
+/// * 프로덕션 `Hooks`는 `BlobPins::new()` → `Hooks::default()` ⇒ `pre_entry`·`pre_recover_grave`
+///   **둘 다 `None`** ⇒ `hooks.<hook>(…).await`는 **즉시 반환**한다: syscall 0 · fs 접촉 0 ·
+///   상태 변경 0 · 로그 0.
 /// * 훅을 심는 유일한 통로 `BlobPins::with_hooks`는 **`#[cfg(test)]`** ⇒ 프로덕션 바이너리에는
 ///   훅을 넣을 **경로 자체가 없다**.
 ///
-/// **P4 봉인도 그대로다**: `AsyncHook`의 반환형은 **`()`**이고(호출부의 제어 흐름을 바꿀 수 없다 —
-/// `reconcile.rs`는 결과를 **바인딩조차 하지 않는다**), 받는 것은 **항목 이름 `&str` 하나**다
-/// (`BlobPins`도 `landed`/`live`도 손에 쥐지 못한다 ⇒ **술어가 아니다**). `Graved`의 유일한 생성자와
-/// `settle(self)`라는 유일한 판정 API는 **한 글자도 바뀌지 않는다**(봉인 체크리스트 ④⑤ 문언 유지).
+/// **P4 봉인도 그대로다**(ADR-0002): `AsyncHook`의 반환형은 **`()`**이고(호출부의 제어 흐름을 바꿀 수
+/// 없다 — `reconcile.rs`는 결과를 **바인딩조차 하지 않는다**), 받는 것은 **이름 `&str` 하나**다
+/// (`BlobPins`도 `landed`/`live`도 손에 쥐지 못한다 ⇒ **술어가 아니다**). `pre_recover_grave`는
+/// 게다가 **`collect_referenced` 이전**에 발화하므로 `refs`조차 존재하지 않는다. `Graved`의 유일한
+/// 생성자(`grave()`의 `Renamed::Done` 팔)와 `settle(self)`라는 유일한 판정 API는 **한 글자도 바뀌지
+/// 않는다**(봉인 체크리스트 ④⑤ 문언 유지) ⇒ **보호 판정은 여전히 `Graved::settle(self)`로만 도달
+/// 가능하다.**
 #[derive(Clone, Default)]
 pub(crate) struct Hooks {
     post_observe: Option<AsyncHook>,
@@ -86,6 +99,12 @@ pub(crate) struct Hooks {
     /// 인자는 sha가 아니라 **항목 이름**(`.tmp-…`도 온다). 예약 이름(`ObjectsEntry::Reserved`)은
     /// **`continue` 뒤**라 발화하지 않는다 — O1(예약 이름에 stat 0)을 보존한다.
     pre_entry: Option<AsyncHook>,
+    /// **9번째 훅** — `recover_graves`의 무덤 루프에서 **무덤 항목 하나당 정확히 한 번** 발화한다
+    /// (`grave_sha` 필터 · `file_type` 검사 **뒤**, `blob_intact` 판정 **앞** ⇒ remove/rename 어느
+    /// 분기로 갈 항목이든 예외 없이). 그 구간에는 발화하는 훅이 **하나도 없었다** ⇒ `PassGuard::begin`을
+    /// 지나는 **진짜 프로덕션 진입점**에 결정적 배리어를 꽂을 방법이 없었다(P-5).
+    /// prod = `Hooks::default()` ⇒ `None` ⇒ **즉시 반환**(syscall 0 · 상태 0) ⇒ 관측 행동 변화 0.
+    pre_recover_grave: Option<AsyncHook>,
     pre_grave: Option<AsyncHook>,
     post_grave: Option<AsyncHook>,
     in_commit_pre_rename: Option<SyncHook>,
@@ -108,6 +127,12 @@ impl Hooks {
     pub(crate) async fn pre_entry(&self, name: &str) {
         if let Some(h) = &self.pre_entry {
             h(name).await;
+        }
+    }
+    /// 무덤 복구 루프의 **항목당 1회** 배리어. prod = `None` ⇒ **즉시 반환**(no-op).
+    pub(crate) async fn pre_recover_grave(&self, sha: &str) {
+        if let Some(h) = &self.pre_recover_grave {
+            h(sha).await;
         }
     }
     pub(crate) async fn pre_grave(&self, sha: &str) {
@@ -440,7 +465,16 @@ impl PassGuard {
     /// 순서 제약 ①(`pin` **<** `blob_intact`)과 ②(무덤 rename **<** `settle`의 판정)는 **타입이 강제**한다
     /// — `blob_intact`는 `PinGuard`의 메서드이고, `settle`은 `Graved`의 메서드이며 `Graved`는
     /// `grave()`의 rename이 `Ok`일 때만 태어난다. **이 ③만 사람이 지켜야 한다.**
-    pub(crate) async fn begin(store: &Store, settle_timeout: Duration) -> std::io::Result<Self> {
+    ///
+    /// ⚠ **`vanished`는 호출자(`run_once_at`)의 패스 집계다** — `pins`는 그것을 **지을 수도**
+    /// (`Vanished::new()` = `E0624`) **읽을 수도**(`get()` = `E0624`) **올릴 수도**(`bump`는 absence
+    /// private) 없다. 여기서 하는 일은 **받은 그 참조를 그대로 `recover_graves`에 넘기는 것**뿐이며,
+    /// 그래야 무덤 루프의 소멸도 **같은 하나의 집계**를 올린다(r16/P-29).
+    pub(crate) async fn begin(
+        store: &Store,
+        settle_timeout: Duration,
+        vanished: &Vanished,
+    ) -> std::io::Result<Self> {
         let _pass = store.pins().pass_lock.clone().lock_owned().await;
         let mut me = Self {
             pins: store.pins().clone(),
@@ -451,8 +485,9 @@ impl PassGuard {
             settle_timeout,
         };
         me.pins.enter_pass(); // pass_live = true; landed.clear()
-        // ↓ 이 아래 모든 `?`는 me(Drop 보유)를 통과한다 → pass_live/landed 누수 불가
-        let recovered = super::reconcile::recover_graves(&me.layout).await?; // collect **이전**
+                              // ↓ 이 아래 모든 `?`는 me(Drop 보유)를 통과한다 → pass_live/landed 누수 불가
+        let recovered =
+            super::reconcile::recover_graves(&me.layout, me.pins.hooks(), vanished).await?; // collect **이전**
         me.recovered = recovered;
         let refs = super::reconcile::collect_referenced(&me.layout, me.pins.hooks()).await?;
         me.refs = refs;
@@ -475,24 +510,60 @@ impl PassGuard {
         &self.pins
     }
 
-    /// blob → 무덤 rename + fsync. **성공했을 때만** `Graved`를 낳는다 — `Graved`의 유일한 생성자다.
-    pub(crate) async fn grave<'p>(&'p self, sha: &str) -> std::io::Result<Graved<'p>> {
-        atomic::rename_durable(
+    /// blob → 무덤 rename + fsync. **rename이 `Ok`였을 때만** `Graved`를 낳는다 — `Graved`의 유일한
+    /// 생성자다.
+    ///
+    /// ⚠ 소스 확인은 **`rename_durable_source_checked` → `rename_checked_blocking`의 `std::fs::rename`
+    /// `Err` 팔 전용**이다. `atomic::rename_durable`(rename+fsync **융합**)에 붙이면 **rename 성공 이후의
+    /// fsync ENOENT가 `SourceGone`으로 위조**되어 `settle()`이 스킵된다(M6 부활).
+    /// ⚠ `vanished`는 **쓰기 전용 계수기**다 — `pins`는 짓지도(`E0624`) 읽지도(`E0624`) 올리지도
+    /// (`bump`는 absence private) 못한다. `Absent`도 여기서 **합성 불가**(`E0423`)다.
+    pub(crate) async fn grave<'p>(
+        &'p self,
+        sha: &str,
+        vanished: &Vanished,
+    ) -> std::io::Result<GraveOutcome<'p>> {
+        // ← 목적지 에러 · **rename 이후의 fsync 실패**는 여기서 **무가공 전파**된다(P-2)
+        match rename_durable_source_checked(
             &self.layout.blob_path(sha),
             &self.layout.grave_path(sha),
             &self.layout.objects_dir(),
+            vanished,
         )
-        .await?; // ← 여기가 실패하면 Graved는 없다
-        // 무덤 이름이 **자리잡은 뒤에** 코호트를 뜬다(P6). 이 rename 이후에 pin한 put은
-        // blob_path에서 ENOENT를 보므로 **자급자족**이다 → 구조적으로 코호트 밖.
-        let cohort = self.pins.cohort_at_grave(sha);
-        self.pins.hooks.post_grave(sha).await;
-        Ok(Graved {
-            pass: self,
-            sha: sha.into(),
-            cohort,
-        })
+        .await?
+        {
+            // 회수할 정본이 스냅샷 이후 사라졌다 → **무덤은 태어나지 않는다**.
+            Renamed::SourceGone(a) => Ok(GraveOutcome::SourceGone(a)),
+            Renamed::Done => {
+                // 무덤 이름이 **자리잡은 뒤에** 코호트를 뜬다(P6). 이 rename 이후에 pin한 put은
+                // blob_path에서 ENOENT를 보므로 **자급자족**이다 → 구조적으로 코호트 밖.
+                let cohort = self.pins.cohort_at_grave(sha);
+                self.pins.hooks.post_grave(sha).await;
+                Ok(GraveOutcome::Moved(Graved {
+                    pass: self,
+                    sha: sha.into(),
+                    cohort,
+                }))
+            }
+        }
     }
+}
+
+/// **`grave()`의 결과**(무덤 그 자체가 아니다).
+///
+/// ⚠ 이름이 `Grave`이면 **용어집과 자기모순**이다: `CONTEXT.md`의 **무덤(Grave)** 은 *"GC가 블롭을 지우기
+/// 전에 옮겨 두는 **이름**"* 인데, 이 타입은 그 이름이 아니라 **옮기기를 시도한 결과**이고
+/// `SourceGone`은 *"무덤이 **태어나지 않았다**"* 를 뜻한다. 게다가 `Graved`와 **한 글자 차이**였다.
+/// ⇒ **`GraveOutcome`** — 무덤을 **낳았거나(`Moved`)**, **정본이 사라져 낳지 못했거나(`SourceGone`)**.
+///
+/// `SourceGone`은 `Absent`를 **요구**한다 ⇒ `pins`에서 **위조 불가**(`E0423`). **봉인은 이름이 아니라
+/// 타입에 걸려 있다** ⇒ 개명으로 킬 능력이 변하지 않는다(P4 봉인 불변).
+#[must_use = "GraveOutcome을 흘리면 무덤이 남는다"]
+pub(crate) enum GraveOutcome<'p> {
+    /// 무덤이 **태어났다** — rename이 `Ok`였다.
+    Moved(Graved<'p>),
+    /// 회수할 정본이 스냅샷 이후 **사라졌다** ⇒ 무덤은 **태어나지 않았다**.
+    SourceGone(#[allow(dead_code)] Absent),
 }
 
 impl Drop for PassGuard {
@@ -623,7 +694,7 @@ mod tests {
     use super::*;
     use crate::error::AppError;
     use crate::store::reconcile;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     /// 넉넉한 예산 — B-1에서는 무덤이 만들어지지 않으므로 발화하지 않는다.
@@ -662,7 +733,9 @@ mod tests {
     #[tokio::test]
     async fn pin_and_put_do_not_block_while_pass_is_live() {
         let (s, d) = store_with_objects().await;
-        let pass = PassGuard::begin(&s, SETTLE).await.unwrap();
+        let pass = PassGuard::begin(&s, SETTLE, &Vanished::new_for_test())
+            .await
+            .unwrap();
 
         let sha = "a".repeat(64);
         let pin = tokio::time::timeout(Duration::from_secs(5), async { s.pins().pin(&sha) })
@@ -688,7 +761,9 @@ mod tests {
     #[tokio::test]
     async fn commit_pointer_lands_and_releases_pin() {
         let (s, d) = store_with_objects().await;
-        let pass = PassGuard::begin(&s, SETTLE).await.unwrap();
+        let pass = PassGuard::begin(&s, SETTLE, &Vanished::new_for_test())
+            .await
+            .unwrap();
 
         let sha = hex_sha(b"payload");
         let pin = s.pins().pin(&sha);
@@ -709,8 +784,12 @@ mod tests {
     async fn stage_failure_leaves_no_landed_trace() {
         let (s, d) = store_with_objects().await;
         // 부모 자리에 파일 → mkdir_p/create가 ENOTDIR로 실패
-        tokio::fs::write(d.path().join("b"), b"i am a file").await.unwrap();
-        let pass = PassGuard::begin(&s, SETTLE).await.unwrap();
+        tokio::fs::write(d.path().join("b"), b"i am a file")
+            .await
+            .unwrap();
+        let pass = PassGuard::begin(&s, SETTLE, &Vanished::new_for_test())
+            .await
+            .unwrap();
 
         let sha = hex_sha(b"never-staged");
         let pin = s.pins().pin(&sha);
@@ -733,7 +812,9 @@ mod tests {
         // 커밋 타깃 자리에 **디렉터리** → stage는 성공하고 rename만 결정적으로 실패(EISDIR/ENOTEMPTY)
         let blocked = d.path().join("b").join("k.meta.json");
         tokio::fs::create_dir_all(&blocked).await.unwrap();
-        let pass = PassGuard::begin(&s, SETTLE).await.unwrap();
+        let pass = PassGuard::begin(&s, SETTLE, &Vanished::new_for_test())
+            .await
+            .unwrap();
 
         let sha = hex_sha(b"rename-fails");
         let pin = s.pins().pin(&sha);
@@ -749,9 +830,13 @@ mod tests {
         // (앞 커밋이 실패해도 키 락은 그 클로저 안에서 풀렸다 → 이 lock()은 블록되지 않는다)
         let pin2 = s.pins().pin(&sha);
         let key2 = s.locks.lock("b", "ok").await;
-        pin2.commit_pointer(key2, d.path().join("b").join("ok.meta.json"), b"{}".to_vec())
-            .await
-            .unwrap();
+        pin2.commit_pointer(
+            key2,
+            d.path().join("b").join("ok.meta.json"),
+            b"{}".to_vec(),
+        )
+        .await
+        .unwrap();
         assert!(landed_has(&s, &sha), "rename이 Ok → 흔적 1");
         drop(pass);
     }
@@ -810,7 +895,9 @@ mod tests {
     #[tokio::test]
     async fn drop_paths_survive_a_poisoned_registry_mutex() {
         let (s, d) = store_with_objects().await;
-        let pass = PassGuard::begin(&s, SETTLE).await.unwrap();
+        let pass = PassGuard::begin(&s, SETTLE, &Vanished::new_for_test())
+            .await
+            .unwrap();
         let sha = "d".repeat(64);
         let pin = s.pins().pin(&sha);
 
@@ -821,15 +908,15 @@ mod tests {
             panic!("등록부를 쥔 채 죽는다");
         });
         assert!(h.join().is_err(), "그 스레드는 패닉해야 한다");
-        assert!(s.pins().inner.is_poisoned(), "뮤텍스가 poison돼야 시나리오가 성립한다");
+        assert!(
+            s.pins().inner.is_poisoned(),
+            "뮤텍스가 poison돼야 시나리오가 성립한다"
+        );
 
         // poison된 등록부를 읽는 유일한 방법(테스트 관측용) — 프로덕션 Drop 경로와 같은 규율.
         let peek = |s: &Store| {
             let g = s.pins().inner.lock().unwrap_or_else(|e| e.into_inner());
-            (
-                g.live.get(&sha).cloned().unwrap_or_default(),
-                g.pass_live,
-            )
+            (g.live.get(&sha).cloned().unwrap_or_default(), g.pass_live)
         };
 
         // ① `PinGuard::drop` — abort하지 않고 **핀을 반드시 제거한다**
@@ -879,9 +966,21 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(observed.load(Ordering::SeqCst), 1, "blob_intact 후 post_observe");
-        assert_eq!(pre.load(Ordering::SeqCst), 1, "커밋 클로저 안 in_commit_pre_rename");
-        assert_eq!(post.load(Ordering::SeqCst), 1, "on_landed 안 in_commit_post_landed");
+        assert_eq!(
+            observed.load(Ordering::SeqCst),
+            1,
+            "blob_intact 후 post_observe"
+        );
+        assert_eq!(
+            pre.load(Ordering::SeqCst),
+            1,
+            "커밋 클로저 안 in_commit_pre_rename"
+        );
+        assert_eq!(
+            post.load(Ordering::SeqCst),
+            1,
+            "on_landed 안 in_commit_post_landed"
+        );
     }
 
     /// **T-S1 — 무취소 커밋은 키 락을 **함께** 들고 죽는다**(B8: 같은 bucket/key 직렬화).
@@ -992,7 +1091,37 @@ mod tests {
     // current_thread 런타임은 `tokio::spawn`한 태스크도 **같은 스레드**에서 폴링하므로,
     // delete 태스크가 `KeyLocks::lock` 안에서 내는 이벤트까지 이 구독자가 잡는다.
 
-    struct CaptureSubscriber(Arc<Mutex<Vec<String>>>);
+    /// **캡처 구독자 — 하나뿐이다.** `Subscriber`의 기계(스팬 no-op 넷 · 스레드-로컬 `set_default` ·
+    /// 이벤트 디스패치)는 **한 번만** 쓰이고, 증인마다 다른 **두 축만** 파라미터로 받는다:
+    ///  · `enabled` — **무엇을 보는가**(레벨 상한이냐 · target 필터냐)
+    ///  · `line`    — **한 줄을 어떻게 적는가**(그 줄의 모양이 곧 증인의 단언 대상이다)
+    ///
+    /// ⚠⚠ **두 형식은 서로 대체할 수 없다** — 그래서 형식을 통일하지 **않았다**:
+    /// 레거시 줄(`capture_line`)은 필드를 `k=v`(**따옴표 없음**)로 적고 T-S2가
+    /// `contains("bucket=wedged")`로 그것을 판다. `tap_line`은 `k={:?}`(**따옴표 있음**)라
+    /// 형식을 합치면 그 단언이 `bucket="wedged"`를 못 맞혀 **characterization이 깨진다**(실측으로 확인).
+    /// ⇒ **공유하는 것은 기계이고, 형식은 증인의 것이다.**
+    struct Capture {
+        enabled: fn(&tracing::Metadata<'_>) -> bool,
+        line: fn(&tracing::Event<'_>) -> String,
+        sink: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl tracing::Subscriber for Capture {
+        fn enabled(&self, m: &tracing::Metadata<'_>) -> bool {
+            (self.enabled)(m)
+        }
+        fn new_span(&self, _a: &tracing::span::Attributes<'_>) -> tracing::Id {
+            tracing::Id::from_u64(1)
+        }
+        fn record(&self, _i: &tracing::Id, _v: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _i: &tracing::Id, _f: &tracing::Id) {}
+        fn event(&self, e: &tracing::Event<'_>) {
+            self.sink.lock().unwrap().push((self.line)(e));
+        }
+        fn enter(&self, _i: &tracing::Id) {}
+        fn exit(&self, _i: &tracing::Id) {}
+    }
 
     struct FieldVisitor(String);
     impl tracing::field::Visit for FieldVisitor {
@@ -1004,27 +1133,70 @@ mod tests {
         }
     }
 
-    impl tracing::Subscriber for CaptureSubscriber {
-        /// ERROR·WARN·INFO만 잡는다(DEBUG/TRACE는 의존성 소음). `Level`의 Ord는
-        /// `ERROR < WARN < INFO < DEBUG < TRACE`다.
-        fn enabled(&self, m: &tracing::Metadata<'_>) -> bool {
-            *m.level() <= tracing::Level::INFO
+    /// 레거시 한 줄: `LEVEL[ k=v]*`.
+    /// ⚠ **레벨을 접두사로 기록한다.** B-2의 증인들은 `settle()`의 **ERROR**
+    /// (`"gc settle timed out"`)와 GC 루프의 **INFO**(`"GC restored: landed commit"`)를
+    /// **구별해서 센다** — 레벨을 버리면 두 뮤턴트(`Deferred`↔`Restored` 혼동)가 살아남는다.
+    fn capture_line(e: &tracing::Event<'_>) -> String {
+        let mut v = FieldVisitor(format!("{} ", e.metadata().level()));
+        e.record(&mut v);
+        v.0
+    }
+
+    /// **ERROR·WARN·INFO만 · 레거시 형식.** (DEBUG/TRACE는 의존성 소음. `Level`의 Ord는
+    /// `ERROR < WARN < INFO < DEBUG < TRACE`다.) — B-2 증인 4개가 이것을 쓴다.
+    fn capture_subscriber(sink: Arc<Mutex<Vec<String>>>) -> Capture {
+        Capture {
+            enabled: |m| *m.level() <= tracing::Level::INFO,
+            line: capture_line,
+            sink,
         }
-        fn new_span(&self, _a: &tracing::span::Attributes<'_>) -> tracing::Id {
-            tracing::Id::from_u64(1)
+    }
+
+    struct TapVisitor {
+        msg: String,
+        fields: String,
+    }
+    impl tracing::field::Visit for TapVisitor {
+        fn record_str(&mut self, f: &tracing::field::Field, v: &str) {
+            self.record_debug(f, &v);
         }
-        fn record(&self, _i: &tracing::Id, _v: &tracing::span::Record<'_>) {}
-        fn record_follows_from(&self, _i: &tracing::Id, _f: &tracing::Id) {}
-        /// ⚠ **레벨을 접두사로 기록한다.** B-2의 증인들은 `settle()`의 **ERROR**
-        /// (`"gc settle timed out"`)와 GC 루프의 **INFO**(`"GC restored: landed commit"`)를
-        /// **구별해서 센다** — 레벨을 버리면 두 뮤턴트(`Deferred`↔`Restored` 혼동)가 살아남는다.
-        fn event(&self, e: &tracing::Event<'_>) {
-            let mut v = FieldVisitor(format!("{} ", e.metadata().level()));
-            e.record(&mut v);
-            self.0.lock().unwrap().push(v.0);
+        fn record_debug(&mut self, f: &tracing::field::Field, v: &dyn std::fmt::Debug) {
+            if f.name() == "message" {
+                self.msg = format!("{v:?}");
+            } else {
+                self.fields.push_str(&format!(" {}={:?}", f.name(), v));
+            }
         }
-        fn enter(&self, _i: &tracing::Id) {}
-        fn exit(&self, _i: &tracing::Id) {}
+    }
+
+    /// W-LOG 한 줄: `LEVEL target message[ k=v]*` — **레벨·target·메시지·필드가 전부 핀된다.**
+    fn tap_line(e: &tracing::Event<'_>) -> String {
+        let mut v = TapVisitor {
+            msg: String::new(),
+            fields: String::new(),
+        };
+        e.record(&mut v);
+        format!(
+            "{} {} {}{}",
+            e.metadata().level(),
+            e.metadata().target(),
+            v.msg,
+            v.fields
+        )
+    }
+
+    /// **레벨 무관 · `files` target만 · W-LOG 형식.** — W-LOG 증인 4개가 이것을 쓴다.
+    ///
+    /// ⚠ **레벨로 거르지 않는 것이 load-bearing이다**: `capture_subscriber`의 INFO 상한은
+    /// *"skip 시 `tracing::debug!` 한 줄을 추가하는 뮤턴트"* 를 **보지 못한다**(실측: 그 구독자
+    /// 시야는 뮤턴트 아래에서도 0건). 소음은 레벨이 아니라 **target**으로 자른다.
+    fn event_tap(sink: Arc<Mutex<Vec<String>>>) -> Capture {
+        Capture {
+            enabled: |m| m.target().starts_with("files"),
+            line: tap_line,
+            sink,
+        }
     }
 
     /// 캡처된 이벤트 중 `level` ∧ `needle`을 **동시에** 만족하는 것의 개수.
@@ -1094,7 +1266,7 @@ mod tests {
         const WARN: Duration = Duration::from_millis(100);
 
         let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let _sub = tracing::subscriber::set_default(CaptureSubscriber(logs.clone()));
+        let _sub = tracing::subscriber::set_default(capture_subscriber(logs.clone()));
 
         let (arrived_tx, mut arrived_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
@@ -1258,7 +1430,10 @@ mod tests {
             matches!(r, Err(AppError::Internal(_))),
             "커밋 rename 실패 → Internal"
         );
-        assert!(!landed_has(&s, &sha), "착지하지 못한 put은 흔적을 남기지 않는다");
+        assert!(
+            !landed_has(&s, &sha),
+            "착지하지 못한 put은 흔적을 남기지 않는다"
+        );
 
         // 4) 실패한 put은 blob을 보호하지 않는다 → 회수된다. **주입형 시각 `T0`**로 판정한다.
         let stats = tokio::time::timeout(
@@ -1274,7 +1449,7 @@ mod tests {
 
     /// **S-3 다리 스모크 — B-2의 배리어 안무가 *구성 가능함*을 증명한다.**
     ///
-    /// 이 테스트가 존재하는 유일한 이유: **한 증인 안에서** ⓐ `Hooks`를 **짓고**(8개 필드는 `pins.rs`
+    /// 이 테스트가 존재하는 유일한 이유: **한 증인 안에서** ⓐ `Hooks`를 **짓고**(9개 필드는 `pins.rs`
     /// private → **이 모듈에서만** 리터럴 가능) ⓑ **주입형 시각**의 reconciler를 **돌린다**
     /// (`run_once_at`은 `reconcile.rs` private → **`run_once_at_for_test` 다리로만** 도달 가능).
     /// 이 둘이 갈라져 있으면 T-B1·T-B2·T-B4·T-C2·T-C3·T-P4a·T-P4b-1·T-P4b-2는 **쓸 수 없다.**
@@ -1339,7 +1514,10 @@ mod tests {
         .expect("패스 2는 유한 시간에 끝난다")
         .unwrap();
         assert_eq!(p2.referenced, 1, "여전히 R 하나");
-        assert_eq!(p2.gc_deleted, 1, "주입형 시각이 tombstone을 만료시킨다 — sleep 없이");
+        assert_eq!(
+            p2.gc_deleted, 1,
+            "주입형 시각이 tombstone을 만료시킨다 — sleep 없이"
+        );
         assert!(!tokio::fs::try_exists(s.blob_path(&x_sha)).await.unwrap());
 
         // ⓓ R은 두 패스 모두 생존하고, 훅은 **프로덕션 경로**에서 매 패스 R을 정확히 1회 봤다.
@@ -1473,7 +1651,9 @@ mod tests {
     /// 포인터가 **하나도 없는** blob을 디스크에 직접 심는다 → `referenced == 0`이 **구조적**이다.
     async fn plant_orphan_blob(s: &Store, content: &[u8]) -> String {
         let sha = hex_sha(content);
-        atomic::write_atomic(&s.blob_path(&sha), content).await.unwrap();
+        atomic::write_atomic(&s.blob_path(&sha), content)
+            .await
+            .unwrap();
         sha
     }
 
@@ -1509,14 +1689,47 @@ mod tests {
         sink.lock().unwrap().iter().filter(|s| *s == sha).count()
     }
 
-    /// `post_grave` — **기록 전용**(§4 자기검증).
-    fn grave_recorder(sink: Arc<Mutex<Vec<String>>>) -> AsyncHook {
-        Arc::new(move |sha: &str| {
-            let (sink, sha) = (sink.clone(), sha.to_owned());
+    /// **첫-발화 콤비네이터 — `armed.swap(false, SeqCst)` 관용구의 유일한 거처.**
+    ///
+    /// 증인 여섯이 *"모든 발화에서 기록/계수하고, **첫 발화에서만** 무대를 흔든다"*를 **각자** 손으로
+    /// 짜고 있었다(자식 셋 × 파일 안 중복). 틀리기 쉬운 조각은 정확히 둘이었다:
+    ///  · **무장 해제** — `swap`이 아니라 `load`+`store`면 첫 발화가 **두 번** 돌 수 있다.
+    ///  · **가드를 await 너머로 들고 가기** — future가 `Send`가 아니게 된다(컴파일은 되다가 `spawn`에서
+    ///    죽는다). ⇒ `each`를 **동기**로 못박아 그 실수를 **표현 불가**로 만든다.
+    ///
+    /// `each`는 **모든** 발화에서(그리고 **먼저**) 돌고, `first`는 **첫 발화에서만** 돈다.
+    /// 첫-발화 동작이 없으면 [`recorder`]처럼 `no_first()`를 넘긴다.
+    fn on_first(
+        each: impl Fn(&str) + Send + Sync + 'static,
+        first: impl Fn(String) -> BoxFuture<'static, ()> + Send + Sync + 'static,
+    ) -> AsyncHook {
+        let armed = Arc::new(AtomicBool::new(true));
+        let (each, first) = (Arc::new(each), Arc::new(first));
+        Arc::new(move |name: &str| {
+            let (armed, each, first, name) =
+                (armed.clone(), each.clone(), first.clone(), name.to_owned());
             Box::pin(async move {
-                sink.lock().unwrap().push(sha);
+                each(&name); // ← 동기 ⇒ MutexGuard가 await를 넘지 못한다(구조적으로)
+                if armed.swap(false, Ordering::SeqCst) {
+                    first(name).await;
+                }
             })
         })
+    }
+
+    /// 첫-발화 동작 **없음**(`on_first`의 항등원).
+    fn no_first() -> impl Fn(String) -> BoxFuture<'static, ()> + Send + Sync + 'static {
+        |_name| Box::pin(async {})
+    }
+
+    /// **발화한 인자를 전부 기록**하는 훅(첫-발화 동작 없음). 몸이 하나뿐이므로 자리를 가리지 않는다:
+    /// `post_grave`(§4 삭제-분기 자기검증)에도, `pre_entry`(**발화 집합** self-verify — 루프가 끝까지
+    /// 돌았다 · bump 후보가 누구였나)에도 **같은 것**을 쓴다.
+    fn recorder(sink: Arc<Mutex<Vec<String>>>) -> AsyncHook {
+        on_first(
+            move |name| sink.lock().unwrap().push(name.to_owned()),
+            no_first(),
+        )
     }
 
     /// `post_grave` — **기록 + 도착 신호**(park 없음 — 통과한다).
@@ -1565,13 +1778,10 @@ mod tests {
 
     /// `target` sha에 **한해서만** 도착 신호 + park. 무관한 put은 **통과**한다
     /// (T-B4의 데드락 부재 sanity가 이것에 의존한다 — 훅은 전역이다).
-    fn async_park_for(
-        target: String,
-        tx: UnboundedSender<String>,
-        gate: Arc<Notify>,
-    ) -> AsyncHook {
+    fn async_park_for(target: String, tx: UnboundedSender<String>, gate: Arc<Notify>) -> AsyncHook {
         Arc::new(move |sha: &str| {
-            let (target, tx, gate, sha) = (target.clone(), tx.clone(), gate.clone(), sha.to_owned());
+            let (target, tx, gate, sha) =
+                (target.clone(), tx.clone(), gate.clone(), sha.to_owned());
             Box::pin(async move {
                 if sha != target {
                     return;
@@ -1615,7 +1825,7 @@ mod tests {
 
         let hooks = Hooks {
             during_collect: Some(async_park(collect_tx, gate.clone())),
-            post_grave: Some(grave_recorder(graved.clone())),
+            post_grave: Some(recorder(graved.clone())),
             ..Hooks::default()
         };
         let d = tempfile::tempdir().unwrap();
@@ -1649,7 +1859,10 @@ mod tests {
         let put = s
             .put("fresh", "v.bin", "text/plain", "u", x_content.clone())
             .await;
-        assert!(put.is_ok(), "dedup put은 성공한다(실패하면 landed가 안 서서 **엉뚱한 이유로** RED다)");
+        assert!(
+            put.is_ok(),
+            "dedup put은 성공한다(실패하면 landed가 안 서서 **엉뚱한 이유로** RED다)"
+        );
 
         // ⓓ 해제 → ⓔ GC 완주(`finish_pass`가 `JoinError`와 `io::Result`를 **둘 다** 언랩한다).
         gate.notify_one();
@@ -1700,7 +1913,7 @@ mod tests {
 
         let hooks = Hooks {
             pre_grave: Some(async_park(pre_tx, gate.clone())),
-            post_grave: Some(grave_recorder(graved.clone())),
+            post_grave: Some(recorder(graved.clone())),
             ..Hooks::default()
         };
         let d = tempfile::tempdir().unwrap();
@@ -1798,7 +2011,10 @@ mod tests {
         let (s2, xc) = (s.clone(), x_content.clone());
         let put = tokio::spawn(async move { s2.put("b", "dedup", "text/plain", "u", xc).await });
         assert_eq!(arrived(&mut obs_rx).await, x_sha);
-        assert!(!live_ids(&s, &x_sha).is_empty(), "핀은 살아 있다(커밋 이전)");
+        assert!(
+            !live_ids(&s, &x_sha).is_empty(),
+            "핀은 살아 있다(커밋 이전)"
+        );
 
         // ⓒ GC spawn → ⓓ **`graved_reached` await**(코호트가 {그 핀}으로 **확정된 뒤**임을 못박는다)
         let s3 = s.clone();
@@ -2025,7 +2241,10 @@ mod tests {
         );
         assert!(!tokio::fs::try_exists(s.blob_path(&x_sha)).await.unwrap());
         assert!(grave_names(&root).await.is_empty(), "무덤 잔재 0");
-        assert!(s.get_bytes("b", "poisoned").await.is_err(), "포인터 무흔적 → 404");
+        assert!(
+            s.get_bytes("b", "poisoned").await.is_err(),
+            "포인터 무흔적 → 404"
+        );
     }
 
     // ── T-P4a ────────────────────────────────────────────────────────────────────────────
@@ -2045,7 +2264,7 @@ mod tests {
         const SETTLE_SHORT: Duration = Duration::from_millis(200);
 
         let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let _sub = tracing::subscriber::set_default(CaptureSubscriber(logs.clone()));
+        let _sub = tracing::subscriber::set_default(capture_subscriber(logs.clone()));
 
         let graved: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let (pre_tx, mut pre_rx) = unbounded_channel::<String>();
@@ -2053,7 +2272,7 @@ mod tests {
 
         let hooks = Hooks {
             in_commit_pre_rename: Some(sync_park(pre_tx, rx)),
-            post_grave: Some(grave_recorder(graved.clone())),
+            post_grave: Some(recorder(graved.clone())),
             ..Hooks::default()
         };
         let d = tempfile::tempdir().unwrap();
@@ -2077,7 +2296,9 @@ mod tests {
             reconcile::run_once_at_for_test(&s, t0, GRACE, SETTLE_SHORT),
         )
         .await
-        .expect("⚠ 멈춘 핀 하나가 패스를 **영구 정지**시키면 안 된다(무한 대기 뮤턴트가 여기서 죽는다)")
+        .expect(
+            "⚠ 멈춘 핀 하나가 패스를 **영구 정지**시키면 안 된다(무한 대기 뮤턴트가 여기서 죽는다)",
+        )
         .expect("패스는 Ok다");
 
         // 단언 ① (유실 0) — fail-OPEN 뮤턴트가 여기서 죽는다
@@ -2106,7 +2327,11 @@ mod tests {
         assert_eq!(p2.gc_deleted, 0);
         assert_eq!(p2.referenced, 0);
         assert!(tokio::fs::try_exists(s.blob_path(&x_sha)).await.unwrap());
-        assert_eq!(count_of(&graved, &x_sha), 2, "매 패스가 무덤을 **다시** 판다");
+        assert_eq!(
+            count_of(&graved, &x_sha),
+            2,
+            "매 패스가 무덤을 **다시** 판다"
+        );
         assert_eq!(count_events(&logs, "ERROR", "gc settle timed out"), 2);
 
         // 단언 ④ (격리 — **다른 blob은 오늘과 똑같이 회수된다**). Y: 핀 없는 만료·미참조 blob.
@@ -2125,8 +2350,14 @@ mod tests {
             "멈춘 핀 **하나**가 다른 blob들의 회수를 막으면 안 된다 — 봉인의 목표는 **격리**다"
         );
         assert_eq!(p3.referenced, 0);
-        assert!(!tokio::fs::try_exists(s.blob_path(&y_sha)).await.unwrap(), "Y는 회수됐다");
-        assert!(tokio::fs::try_exists(s.blob_path(&x_sha)).await.unwrap(), "X는 여전히 존재한다");
+        assert!(
+            !tokio::fs::try_exists(s.blob_path(&y_sha)).await.unwrap(),
+            "Y는 회수됐다"
+        );
+        assert!(
+            tokio::fs::try_exists(s.blob_path(&x_sha)).await.unwrap(),
+            "X는 여전히 존재한다"
+        );
         assert_eq!(count_of(&graved, &x_sha), 3);
         assert_eq!(count_of(&graved, &y_sha), 1);
         assert_eq!(count_events(&logs, "ERROR", "gc settle timed out"), 3);
@@ -2179,7 +2410,7 @@ mod tests {
         const SETTLE_LONG: Duration = Duration::from_secs(30);
 
         let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let _sub = tracing::subscriber::set_default(CaptureSubscriber(logs.clone()));
+        let _sub = tracing::subscriber::set_default(capture_subscriber(logs.clone()));
 
         let graved: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let (gc_tx, mut gc_rx) = unbounded_channel::<String>();
@@ -2190,7 +2421,7 @@ mod tests {
         let hooks = Hooks {
             pre_grave: Some(async_park(gc_tx, gate.clone())),
             in_commit_post_landed: Some(sync_park(landed_tx, rx_put)),
-            post_grave: Some(grave_recorder(graved.clone())),
+            post_grave: Some(recorder(graved.clone())),
             ..Hooks::default()
         };
         let d = tempfile::tempdir().unwrap();
@@ -2211,20 +2442,33 @@ mod tests {
         });
         assert_eq!(arrived(&mut gc_rx).await, x_sha);
         // **사전조건** ⇒ `collect_referenced`는 포인터를 볼 수 **없었다**(참조됨 분기 누수 구조적 배제)
-        assert!(tokio::fs::try_exists(s.blob_path(&x_sha)).await.unwrap(), "무덤은 아직 없다");
-        assert!(!tokio::fs::try_exists(&pointer).await.unwrap(), "포인터는 아직 없다");
+        assert!(
+            tokio::fs::try_exists(s.blob_path(&x_sha)).await.unwrap(),
+            "무덤은 아직 없다"
+        );
+        assert!(
+            !tokio::fs::try_exists(&pointer).await.unwrap(),
+            "포인터는 아직 없다"
+        );
 
         // 4) **그 park 동안** put spawn(핸들 **보유**) → dedup → rename **Ok** → `landed` 삽입 +
         //    `notify_waiters()`(⚠ 대기자 **0명** — settle은 아직 시작조차 안 했다) →
         //    `in_commit_post_landed`에서 park(fsync 직전 · **핀은 여전히 live**)
         let (s3, xc) = (s.clone(), x_content.clone());
         let put = tokio::spawn(async move {
-            s3.put("b", "landed_then_stuck", "text/plain", "u", xc).await
+            s3.put("b", "landed_then_stuck", "text/plain", "u", xc)
+                .await
         });
         assert_eq!(arrived(&mut landed_rx).await, x_sha);
         assert!(landed_has(&s, &x_sha), "커밋 rename이 Ok → 착지 흔적");
-        assert!(!live_ids(&s, &x_sha).is_empty(), "핀은 **여전히 live**(클로저 소유)");
-        assert!(tokio::fs::try_exists(&pointer).await.unwrap(), "포인터가 VFS에 실재한다");
+        assert!(
+            !live_ids(&s, &x_sha).is_empty(),
+            "핀은 **여전히 live**(클로저 소유)"
+        );
+        assert!(
+            tokio::fs::try_exists(&pointer).await.unwrap(),
+            "포인터가 VFS에 실재한다"
+        );
 
         // 5) `gc_park` 해제 → `grave()` → 코호트 = {**살아 있는** 핀} → `settle()`의 **첫 검사**에서
         //    `landed ∋ sha` → **await 0회 · 즉시 복원**
@@ -2241,7 +2485,10 @@ mod tests {
             !live_ids(&s, &x_sha).is_empty(),
             "단언 시점에 put은 여전히 park돼 있다 ⇒ **코호트는 드레인되지 않았다**"
         );
-        let (_, got) = s.get_bytes("b", "landed_then_stuck").await.expect("즉시 복원");
+        let (_, got) = s
+            .get_bytes("b", "landed_then_stuck")
+            .await
+            .expect("즉시 복원");
         assert_eq!(got, x_content);
         assert!(tokio::fs::try_exists(s.blob_path(&x_sha)).await.unwrap());
         assert!(grave_names(&root).await.is_empty(), "무덤 잔재 0");
@@ -2283,7 +2530,7 @@ mod tests {
         const SETTLE_LONG: Duration = Duration::from_secs(30);
 
         let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let _sub = tracing::subscriber::set_default(CaptureSubscriber(logs.clone()));
+        let _sub = tracing::subscriber::set_default(capture_subscriber(logs.clone()));
 
         let graved: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let (gc_tx, mut gc_rx) = unbounded_channel::<String>();
@@ -2294,7 +2541,7 @@ mod tests {
         let (tx_b, rx_b) = std::sync::mpsc::channel::<()>(); // **teardown에서만** 해제
         let gate = Arc::new(Notify::new());
 
-        // **전부 기존 훅이다** — `Hooks` 필드 7개 불변 · 프로덕션 훅 0개 추가.
+        // **전부 기존 훅이다** — `Hooks` 필드 9개 불변 · 프로덕션 훅 0개 추가.
         let hooks = Hooks {
             pre_grave: Some(async_park(gc_tx, gate.clone())),
             in_commit_pre_rename: Some(sync_park(pre_tx, rx_a)),
@@ -2319,8 +2566,14 @@ mod tests {
             reconcile::run_once_at_for_test(&s2, t0, GRACE, SETTLE_LONG).await
         });
         assert_eq!(arrived(&mut gc_rx).await, x_sha);
-        assert!(tokio::fs::try_exists(s.blob_path(&x_sha)).await.unwrap(), "무덤은 **아직 없다**");
-        assert!(!tokio::fs::try_exists(&pointer).await.unwrap(), "포인터는 **아직 없다**");
+        assert!(
+            tokio::fs::try_exists(s.blob_path(&x_sha)).await.unwrap(),
+            "무덤은 **아직 없다**"
+        );
+        assert!(
+            !tokio::fs::try_exists(&pointer).await.unwrap(),
+            "포인터는 **아직 없다**"
+        );
 
         // 4) **그 park 동안** put spawn(핸들 **보유**) → dedup 관측 → stage → `park_A`(rename 직전)
         //    **⇒ `pre_rename_reached` await — ⚠ 이 await가 봉인 그 자체다.**
@@ -2349,7 +2602,10 @@ mod tests {
         //    **논증이 아니라 관측**이 된다(함정 6: 해제 send의 반환은 재개가 아니다).
         assert_eq!(arrived(&mut post_rx).await, x_sha);
         assert!(landed_has(&s, &x_sha), "rename Ok → 착지 흔적");
-        assert!(!live_ids(&s, &x_sha).is_empty(), "핀은 **착지 이후에도** 살아 있다");
+        assert!(
+            !live_ids(&s, &x_sha).is_empty(),
+            "핀은 **착지 이후에도** 살아 있다"
+        );
 
         // 7) settlement가 **깨어나** 검사 ①에서 `landed ∋ sha` → 즉시 복원.
         //    **단언 ⑤(시간 기반, 보조)** — `finish_pass_promptly`의 2초 창은 6단계 **이후에만** 돈다.
@@ -2360,7 +2616,10 @@ mod tests {
         assert_eq!(stats.referenced, 0);
         assert_eq!(*graved.lock().unwrap(), vec![x_sha.clone()]);
         // 단언 ③ (핀이 **아직도** live인 채로 복원됐다)
-        assert!(!live_ids(&s, &x_sha).is_empty(), "코호트는 **여전히** 드레인되지 않았다");
+        assert!(
+            !live_ids(&s, &x_sha).is_empty(),
+            "코호트는 **여전히** 드레인되지 않았다"
+        );
         let (_, got) = s.get_bytes("b", "settle_wakeup").await.expect("복원 필수");
         assert_eq!(got, x_content);
         assert!(tokio::fs::try_exists(s.blob_path(&x_sha)).await.unwrap());
@@ -2438,7 +2697,9 @@ mod tests {
             reconcile::run_once_at_for_test(&s, before_expiry(t0), GRACE, SETTLE),
         )
         .await
-        .expect("복구 패스는 유한 시간에 끝난다(취소 완료를 안 기다리면 여기서 `pass_lock`에 막힌다)")
+        .expect(
+            "복구 패스는 유한 시간에 끝난다(취소 완료를 안 기다리면 여기서 `pass_lock`에 막힌다)",
+        )
         .expect("패스는 Ok다");
 
         assert_eq!(stats.gc_deleted, 0);
@@ -2500,7 +2761,10 @@ mod tests {
 
         assert_eq!(stats.referenced, 1, "복구된 정본은 포인터로 참조된다");
         assert_eq!(stats.gc_deleted, 0);
-        let (_, got) = s.get_bytes("b", "k").await.expect("무덤이 복원되어 서빙 가능해야 한다");
+        let (_, got) = s
+            .get_bytes("b", "k")
+            .await
+            .expect("무덤이 복원되어 서빙 가능해야 한다");
         assert_eq!(got, content);
         assert!(grave_names(&root).await.is_empty(), "무덤 잔재 0");
     }
@@ -2533,7 +2797,9 @@ mod tests {
         let t0 = SystemTime::now();
         seed_expired_tombstones(&root, t0, &[&x_sha]).await;
 
-        let pass = PassGuard::begin(&s, SETTLE).await.expect("begin");
+        let pass = PassGuard::begin(&s, SETTLE, &Vanished::new_for_test())
+            .await
+            .expect("begin");
         // **삭제 분기 자기검증**(stats가 없는 경로 → `referenced()`로 같은 규율을 건다)
         assert!(pass.referenced().is_empty(), "포인터가 하나도 없다");
 
@@ -2544,7 +2810,14 @@ mod tests {
         assert!(landed_has(&s, &x_sha));
 
         // ⚠ `grave()`를 **await**한다 — `Graved`는 rename이 성공했을 때만 태어난다.
-        let g = pass.grave(&x_sha).await.expect("grave rename must succeed");
+        let g = match pass
+            .grave(&x_sha, &Vanished::new_for_test())
+            .await
+            .expect("grave rename must succeed")
+        {
+            GraveOutcome::Moved(g) => g,
+            GraveOutcome::SourceGone(_) => panic!("정본은 디스크에 있다 — SourceGone일 수 없다"),
+        };
         // `Settled`는 `Debug`를 유도하지 않는다(프로덕션 타입 diff 0) → `match`로 언랩한다.
         let e = match g.settle().await {
             Ok(_) => panic!("주입된 EIO는 **무가공**으로 전파되어야 한다(합성 금지 — B7)"),
@@ -2569,8 +2842,15 @@ mod tests {
         .expect("패스는 Ok다");
         assert_eq!(stats.gc_deleted, 0);
         assert_eq!(stats.referenced, 1);
-        assert_eq!(injected.load(Ordering::SeqCst), 1, "복구 패스는 settle에 도달하지 않는다");
-        let (_, got) = s.get_bytes("b", "k").await.expect("다음 패스가 복구한다 — 유실 0");
+        assert_eq!(
+            injected.load(Ordering::SeqCst),
+            1,
+            "복구 패스는 settle에 도달하지 않는다"
+        );
+        let (_, got) = s
+            .get_bytes("b", "k")
+            .await
+            .expect("다음 패스가 복구한다 — 유실 0");
         assert_eq!(got, x_content);
         assert!(grave_names(&root).await.is_empty(), "무덤 잔재 0");
     }
@@ -2613,7 +2893,7 @@ mod tests {
 
         let hooks = Hooks {
             pre_grave: Some(async_park(gc_tx, gate.clone())),
-            post_grave: Some(grave_recorder(graved.clone())),
+            post_grave: Some(recorder(graved.clone())),
             restore_io: Some(Arc::new(move |_sha: &str| {
                 inj.fetch_add(1, Ordering::SeqCst);
                 Err(std::io::Error::other("injected EIO"))
@@ -2683,8 +2963,15 @@ mod tests {
         .expect("패스는 Ok다");
         assert_eq!(stats.referenced, 1, "ⓒ의 put이 남긴 포인터 하나");
         assert_eq!(stats.gc_deleted, 0);
-        assert_eq!(injected.load(Ordering::SeqCst), 1, "복구 패스는 settle에 도달하지 않는다");
-        let (_, got) = s.get_bytes("b", "k").await.expect("다음 패스가 복구한다 — 유실 0");
+        assert_eq!(
+            injected.load(Ordering::SeqCst),
+            1,
+            "복구 패스는 settle에 도달하지 않는다"
+        );
+        let (_, got) = s
+            .get_bytes("b", "k")
+            .await
+            .expect("다음 패스가 복구한다 — 유실 0");
         assert_eq!(got, x_content);
         assert!(grave_names(&root).await.is_empty(), "무덤 잔재 0");
     }
@@ -2707,7 +2994,7 @@ mod tests {
     async fn leaked_graved_token_leaves_a_grave_that_the_next_pass_recovers() {
         let graved: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let hooks = Hooks {
-            post_grave: Some(grave_recorder(graved.clone())),
+            post_grave: Some(recorder(graved.clone())),
             ..Hooks::default()
         };
         let d = tempfile::tempdir().unwrap();
@@ -2721,11 +3008,20 @@ mod tests {
         seed_expired_tombstones(&root, t0, &[&x_sha]).await;
 
         // 2) 패스 등록
-        let pass = PassGuard::begin(&s, SETTLE).await.expect("begin");
+        let pass = PassGuard::begin(&s, SETTLE, &Vanished::new_for_test())
+            .await
+            .expect("begin");
         assert!(pass.referenced().is_empty(), "포인터가 하나도 없다");
 
         // 3) ⚠ **`grave()`를 await한다**(§5.1-9 · 함정 10)
-        let g = pass.grave(&x_sha).await.expect("grave rename must succeed");
+        let g = match pass
+            .grave(&x_sha, &Vanished::new_for_test())
+            .await
+            .expect("grave rename must succeed")
+        {
+            GraveOutcome::Moved(g) => g,
+            GraveOutcome::SourceGone(_) => panic!("정본은 디스크에 있다 — SourceGone일 수 없다"),
+        };
 
         // 4) ⚠ **복구 *이전* 디스크 상태를 단언한다** — 이 네 줄이 P-8이 없앴던 바로 그 관측이다.
         //    개정 전에는 넷 다 **거짓**이었고(무덤 0개 · blob 존재) **아무도 그것을 묻지 않았다.**
@@ -2739,7 +3035,10 @@ mod tests {
             "무덤의 온디스크 접두사는 `.gc-grave-`다 — 잡힌 이름: {names:?}"
         );
         assert!(names[0].contains(&x_sha), "무덤 이름은 그 sha를 품는다");
-        assert!(!tokio::fs::try_exists(s.blob_path(&x_sha)).await.unwrap(), "정본은 무덤으로 갔다");
+        assert!(
+            !tokio::fs::try_exists(s.blob_path(&x_sha)).await.unwrap(),
+            "정본은 무덤으로 갔다"
+        );
         assert_eq!(*graved.lock().unwrap(), vec![x_sha.clone()]);
 
         // 5) **누수**: `settle()`을 부르지 않고 버린다. `Graved`에는 **파괴적 Drop이 없다** ⇒ 디스크 불변.
@@ -2774,12 +3073,18 @@ mod tests {
     /// **F-14 회귀 증인**(`reconcile-vanished-entry-aborts-pass`) — `src/store/pins/tests/vanished_entry_regression.rs`.
     ///
     /// **`tests`의 자식**이다(형제가 아니다). 두 벽을 **동시에** 넘어야 하기 때문이다:
-    /// ① `Hooks`의 **8개 필드는 `pins` private**이므로 훅을 리터럴로 짓는 증인은 `pins`의 **자손**이어야
+    /// ① `Hooks`의 **9개 필드는 `pins` private**이므로 훅을 리터럴로 짓는 증인은 `pins`의 **자손**이어야
     ///    한다(필드 계수는 위 `Hooks` 정의가 소유한다).
     /// ② 위 **랑데부 프리미티브**(`arrived`/`finish_pass`/`probe_still_waiting`/`plant_orphan_blob`/
     ///    `seed_expired_tombstones`…)는 **이 모듈 private**이므로 **형제 모듈은 재사용할 수 없다** →
     ///    형제로 두면 *"위험한 반복구는 여기 한 곳에만 산다"*가 깨진다(복사본이 생긴다).
     /// **자식**이면 ①②를 둘 다 만족하며 기존 테스트의 가시성을 **한 글자도 넓히지 않는다**.
+    ///
+    /// ⚠⚠ **증인 레지스트리는 이 하네스 *안*에 두지 않는다**(구 W-REG는 폐기됐다 — 계획 §B-1 0-e):
+    /// 하네스 안의 검사는 **`#[ignore]` 한 줄로 꺼진다**(실측: W-REG에 `#[ignore]` + `mod` 삭제
+    /// ⇒ `128 passed; 1 ignored` · **exit 0** — 자기가 막겠다던 바로 그 공격에 당한다). 그리고 목록이
+    /// 셸과 크레이트 두 곳에 살면 **반드시 어긋난다**. ⇒ **레지스트리의 단일 권위는 감사 대상 하네스
+    /// *밖*의 `scripts/f14-witness-gate.sh`** 하나이며, 그것이 acceptance의 0단계다.
     mod vanished_entry_regression;
 
     /// **F-14 Temp 분기 회귀 증인** — `src/store/pins/tests/vanished_temp_regression.rs`.
@@ -2792,4 +3097,26 @@ mod tests {
     ///
     /// `tests`의 **자식**인 이유는 형제와 같다(훅 필드 private · 랑데부 프리미티브 private).
     mod vanished_temp_regression;
+
+    /// **F-14 봉인 증인**(플립하지 **않는** 것들) — `src/store/pins/tests/vanished_container_witnesses.rs`.
+    /// **W10 · W10-TEMP · W10-G · W10b**(루프-후 가드의 세 팔 + `vanished > 0` 게이트) ·
+    /// **W-GRAVE-CD-A/B**(무덤 rename 시점 파괴 — `grave()`의 **blocking** 부재 채널) ·
+    /// **W6 · W6b**(park 중 정본 소멸 / rename `Ok` 이후 fsync EACCES) ·
+    /// **W3**(댕글링 blob 심링크 — 항목이 **있으므로** 오늘의 `Err` 보존).
+    /// `tests`의 **자식**인 이유는 형제들과 같다(훅 필드 private · 랑데부 프리미티브 private).
+    mod vanished_container_witnesses;
+
+    /// **F-14 로그 스트림 증인** — `src/store/pins/tests/log_witness.rs`.
+    /// **W-LOG-A**(소멸 0 스트림 전수·순서 특성화) · **W-LOG-B**(하류 이벤트가 정확히 N−1건) ·
+    /// **W-LOG-C**(Blob `read()` skip 팔의 침묵) · **W-LOG-D**(★차단 요건 — **밟을 수 있는 skip 팔
+    /// 전부**의 침묵: Temp `metadata()`/`remove()` · Blob `read()` · `grave()` `SourceGone` · 무덤 루프
+    /// `remove()`/`rename_durable_to()`. 도달 불가(`file_type()` 두 팔)와 배리어 부재(격리 `rename_into()`)는
+    /// 그 파일의 **전수표**에 정직하게 등재돼 있다).
+    /// ⚠ `event_tap`은 **레벨로 거르지 않는다** — INFO 상한이 남으면 `debug!` skip 로그가 보이지 않는다.
+    mod log_witness;
+
+    /// **F-14 프로덕션 진입점 증인**(P-5) — `src/store/pins/tests/recover_graves_production_seam.rs`.
+    /// **W11** — `run_once_at_for_test` → **`PassGuard::begin` → `recover_graves`** 경로를 실제로 타고,
+    /// **9번째 훅 `pre_recover_grave`** 로 무덤 루프 안에 결정적 배리어를 건다.
+    mod recover_graves_production_seam;
 }

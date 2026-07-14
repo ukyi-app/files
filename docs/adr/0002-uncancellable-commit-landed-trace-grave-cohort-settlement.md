@@ -230,6 +230,43 @@ mv <DATA_DIR>/.objects/.gc-grave-<sha> <DATA_DIR>/.objects/<sha>
 > **새 배리어 테스트를 쓸 때는 「개시 ≠ 완료」 클래스의 10개 함정 항목을 1:1로 대조하라** —
 > *"이전 라운드에서 safe 판정"은 근거가 아니다.*
 
+## 추가 (F-14, 2026-07-14) — **관측 훅 2개가 늘었다. 봉인 ④⑤는 그대로 선다.**
+
+> **정정이 아니라 추가다.** 이 ADR은 `Hooks`의 **필드 수를 세지 않는다**(계수의 정본은 `pins.rs`의
+> `Hooks` doc이다). 여기 적는 것은 **새 훅이 위 봉인 체크리스트 ④⑤를 깨지 않는다는 논증**이다.
+
+F-14(`reconcile` 패스가 스냅샷 이후 사라진 항목에 죽는다)를 고치면서 **관측 전용 `AsyncHook` 두 개**가
+`Hooks`에 열렸다:
+
+| 훅 | 발화 지점 | 왜 필요했나 |
+|---|---|---|
+| **`pre_entry`** (8번째 · red.sha `ac58bd7`) | `.objects` 항목 루프 — **그 항목의 첫 FS 접촉 직전**(`file_type()` **이전** · 예약 이름 `continue` **이후** ⇒ O1 보존) | F-14의 프로덕션 증상은 **Temp 분기**(`e.metadata()`)에서 난다. 기존 훅 중 그 분기에 **결정적으로** park를 걸 수 있는 것이 **하나도 없었다**(`during_collect`는 스냅샷 **이전** · `post_observe`는 **put 경로** · `pre_grave`/`post_grave`는 **Blob 분기 전용**) ⇒ Temp 분기의 RED 증인을 쓸 방법이 없었다 |
+| **`pre_recover_grave`** (9번째 · F-14) | `recover_graves`의 무덤 루프 — `grave_sha` 필터와 `file_type` 검사 **뒤**, `blob_intact` 판정 **앞** ⇒ **무덤 항목 하나당 정확히 한 번**, remove/rename **어느 분기로 갈 항목이든** | 구조적 불변식만으로는 *"헬퍼는 초록인데 **프로덕션이 그 헬퍼를 안 쓴다**"* 를 못 잡는다 ⇒ 증인이 **진짜 프로덕션 진입점**(`PassGuard::begin` → `recover_graves`)을 타야 하는데, 그 구간에서 발화하는 훅이 **하나도 없었다** |
+
+### 왜 **P4 봉인**(*"보호 판정은 `Graved::settle(self)`로만 도달 가능"*)이 그대로 성립하는가
+
+**① `AsyncHook`의 반환형은 `()`다** — `type AsyncHook = Arc<dyn Fn(&str) -> BoxFuture<'static, ()> + …>`.
+값도 제어 흐름도 바꿀 수 없다(호출부는 결과를 **바인딩조차 하지 않는다**) ⇒ **술어가 아니다.**
+**② 받는 것은 `&str` 하나다** — `BlobPins`도 `landed`도 `live`도 **손에 쥐지 못한다** ⇒ 보호 상태를 **볼 수 없다.**
+**③ `pre_recover_grave`는 `collect_referenced` *이전*에 발화한다** ⇒ 그 시점에는 **`refs`조차 존재하지 않는다.**
+**④ `Graved`의 유일한 생성자는 여전히 `grave()`의 rename 성공 팔이다** — F-14가 그 반환형을
+`GraveOutcome{Moved(Graved), SourceGone(Absent)}`로 바꾸면서 조건은 오히려 **더 좁아졌다**: `Graved`는 이제
+**`Renamed::Done` 팔에서만** 태어나고, `SourceGone`은 **`absence` 모듈 밖에서 합성할 수 없다**
+(`Absent`의 필드가 private ⇒ `E0423` — 컴파일러로 실증).
+
+⇒ **봉인 체크리스트 ④⑤의 문언은 한 글자도 바뀌지 않는다.** 보호 판정 API는 여전히 **`Graved::settle(self)`
+하나**이고, `settle()`·`Graved`·`Settled`는 **F-14에서 무변경**이다.
+
+### 프로덕션에서는 존재하지 않는다
+
+두 훅 모두 프로덕션 `Hooks::default()`에서 **`None`** 이다 ⇒ `hooks.<hook>(…).await`는 **즉시 반환**한다
+(syscall 0 · FS 접촉 0 · 상태 변경 0 · 로그 0). 훅을 심는 유일한 통로 `BlobPins::with_hooks`는
+**`#[cfg(test)]`** 이므로 **프로덕션 바이너리에는 훅을 넣을 경로 자체가 없다** ⇒ **관측 행동 변화 0.**
+(기존 훅 7개와 **정확히 같은 논증**이다.)
+
+⚠ **봉인 체크리스트 ⑦⑧⑨⑩은 새 훅을 쓰는 증인에도 그대로 적용된다** — 도착 신호 ≺ park ·
+`notify_one()` 해제 · 유한 타임아웃 · `JoinError`와 내부 `io::Result`를 **둘 다** 언랩 · 분기 진입 자기검증.
+
 ## ⚠ 여덟 라운드의 메타 교훈 — **이것이 이 프로젝트의 진짜 산출물이다**
 
 > **`src/` 설계는 여섯 라운드 내내 한 글자도 바뀌지 않았다. 매번 틀린 것은 증인이었다.**

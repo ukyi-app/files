@@ -49,7 +49,7 @@ use tokio::io::AsyncWriteExt;
 pub async fn write_atomic(target: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let parent = target.parent().expect("target has parent");
     mkdir_p_durable(parent).await?; // (발견 P3-1) 조상 디렉터리도 내구적으로 생성
-    // temp는 target의 형제(임의 부모 디렉터리) — 이름만 layout이 저작(root 비의존).
+                                    // temp는 target의 형제(임의 부모 디렉터리) — 이름만 layout이 저작(root 비의존).
     let tmp = parent.join(layout::temp_name(&unique_suffix()));
     {
         let mut f = tokio::fs::File::create(&tmp).await?;
@@ -64,7 +64,9 @@ pub async fn write_atomic(target: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// 디렉터리 fsync의 **유일한 정의**(드리프트 0). 이 모듈에서 디렉터리 엔트리를 내구화하는 곳은
 /// 넷뿐이며 — `rename_durable_blocking` · `Staged::commit_blocking` · `fsync_dir` ·
 /// `mkdir_p_durable_blocking` — **전부 이것을 경유한다.** syscall 시퀀스는 `open` + `fsync`로 불변.
-fn fsync_dir_blocking(dir: &Path) -> std::io::Result<()> {
+/// ⚠ 가시성만 `pub(crate)`로 넓혔다(F-14) — `reconcile::absence`가 rename+fsync를 **한 무취소
+/// 클로저**에 유지하려면 필요하다(M6 봉인). **시그니처·본문·syscall 시퀀스는 불변.**
+pub(crate) fn fsync_dir_blocking(dir: &Path) -> std::io::Result<()> {
     std::fs::File::open(dir)?.sync_all()
 }
 
@@ -105,7 +107,7 @@ pub(crate) struct Staged {
 pub(crate) fn stage_blocking(target: &Path, bytes: &[u8]) -> std::io::Result<Staged> {
     let parent = target.parent().expect("target has parent");
     mkdir_p_durable_blocking(parent)?; // (발견 P3-1) 조상 디렉터리도 내구적으로 생성
-    // temp는 target의 형제(임의 부모 디렉터리) — 이름만 layout이 저작(root 비의존).
+                                       // temp는 target의 형제(임의 부모 디렉터리) — 이름만 layout이 저작(root 비의존).
     let tmp = parent.join(layout::temp_name(&unique_suffix()));
     {
         let mut f = std::fs::File::create(&tmp)?;
@@ -210,7 +212,11 @@ fn mkdir_p_durable_blocking(dir: &Path) -> std::io::Result<()> {
 pub(crate) fn unique_suffix() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static N: AtomicU64 = AtomicU64::new(0);
-    format!("{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed))
+    format!(
+        "{}-{}",
+        std::process::id(),
+        N.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 #[cfg(test)]

@@ -4,14 +4,30 @@ use axum::body::Body;
 use axum::http::{header, Request};
 use files::config::Config;
 use files::http::{self, AppState};
+use files::layout::Layout;
+use files::store::Store;
 use sha2::{Digest, Sha256};
 
 pub fn hex_sha(b: &[u8]) -> String {
     hex::encode(Sha256::digest(b))
 }
 
+/// `.objects`를 만들고 `(tempdir, Store, Layout)`을 준다 — **F-14 통합 증인의 공용 무대**
+/// (`e2e`의 W4·W7·W9·W10c·W17 · `reconcile_vanishing_entries`의 W13-E/G/T).
+///
+/// ⚠ tempdir을 **돌려준다** — 호출부가 `let (_d, ..)`로 붙잡고 있어야 한다(드롭되면 무대가 사라진다).
+pub fn f14_store() -> (tempfile::TempDir, Store, Layout) {
+    let d = tempfile::tempdir().unwrap();
+    let root = d.path().to_path_buf();
+    let l = Layout::new(root.clone());
+    std::fs::create_dir_all(l.objects_dir()).unwrap();
+    (d, Store::new(root), l)
+}
+
 pub async fn body_json(resp: axum::response::Response) -> serde_json::Value {
-    let b = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let b = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
     serde_json::from_slice(&b).unwrap()
 }
 

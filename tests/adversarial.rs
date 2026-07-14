@@ -47,7 +47,9 @@ async fn concurrent_same_key_put_delete_self_consistent() {
 async fn concurrent_readers_never_observe_desync_on_same_size_overwrite() {
     let d = tempfile::tempdir().unwrap();
     let s = Arc::new(Store::new(d.path().to_path_buf()));
-    s.put("b", "k", "text/plain", "u", b"AAAA".to_vec()).await.unwrap();
+    s.put("b", "k", "text/plain", "u", b"AAAA".to_vec())
+        .await
+        .unwrap();
     let stop = Arc::new(AtomicBool::new(false));
 
     let mut readers = vec![];
@@ -83,13 +85,25 @@ async fn concurrent_nested_puts_with_reconcile_loop_preserve_all() {
     let stop = Arc::new(AtomicBool::new(false));
 
     // grace 1h reconcile 루프(진행 중 업로드와 공존해야)
+    //
+    // ⚠⚠ **눈가리개를 벗긴다(F-14).** 이 루프는 동시 put의 `.tmp-<uniq>` → `<sha>` rename과 **매 실행
+    //    경합한다**. 결과를 `let _ =`로 버리면 패스가 `Err`로 **중단돼도 이 테스트는 초록**이다 —
+    //    **그것이 이 버그가 오래 살아남은 구조적 이유다**(`pins.rs` 봉인 체크리스트 10번:
+    //    *"`let _ = <async fn>(..)` 금지"*의 정확한 위반이었다).
+    //    `let _ = e;`와 `e.expect(m)`은 **똑같이 평가**하고 후자만 `Err`에서 패닉한다
+    //    ⇒ **제거된 단언 0 · 삭제된 테스트 0 · 실패 모드 +1**(단조 강화).
     let rec = {
         let s2 = (*s).clone(); // ⚠ 같은 Store를 공유해야 한다 — Store::new 재구성 금지(D-3)
         let stop = stop.clone();
         tokio::spawn(async move {
             while !stop.load(Ordering::Relaxed) {
-                let _ = reconcile::run_once(&s2, Duration::from_secs(3600), Duration::from_secs(30))
-                    .await;
+                reconcile::run_once(&s2, Duration::from_secs(3600), Duration::from_secs(30))
+                    .await
+                    .expect(
+                        "PASS ABORTED — 동시 put과 경합하는 reconcile 패스가 `Err`로 중단됐다. \
+                         스냅샷 이후 사라진 `.objects` 항목(동시 rename이 치운 `.tmp-<uniq>`)은 \
+                         **그 항목만 건너뛰고** 패스는 완주해야 한다(F-14).",
+                    );
                 tokio::time::sleep(Duration::from_millis(3)).await;
             }
         })
@@ -100,9 +114,15 @@ async fn concurrent_nested_puts_with_reconcile_loop_preserve_all() {
         let s = s.clone();
         hs.push(tokio::spawn(async move {
             let key = format!("dir/sub/file-{i}.bin");
-            s.put("b", &key, "application/octet-stream", "u", vec![i as u8; 200])
-                .await
-                .unwrap();
+            s.put(
+                "b",
+                &key,
+                "application/octet-stream",
+                "u",
+                vec![i as u8; 200],
+            )
+            .await
+            .unwrap();
         }));
     }
     for h in hs {
@@ -156,7 +176,13 @@ async fn upload_rejected_507_no_temp_residue_existing_intact() {
     // 기존 객체는 store로 직접(핸들러 우회) 생성
     state
         .store
-        .put("skills", "existing.txt", "text/plain", "u", b"keep".to_vec())
+        .put(
+            "skills",
+            "existing.txt",
+            "text/plain",
+            "u",
+            b"keep".to_vec(),
+        )
         .await
         .unwrap();
 
@@ -172,12 +198,18 @@ async fn upload_rejected_507_no_temp_residue_existing_intact() {
     assert_eq!(res.status(), StatusCode::INSUFFICIENT_STORAGE); // 507
 
     // 기존 객체 무손상
-    let (m, b) = state.store.get_bytes("skills", "existing.txt").await.unwrap();
+    let (m, b) = state
+        .store
+        .get_bytes("skills", "existing.txt")
+        .await
+        .unwrap();
     assert_eq!(b, b"keep");
     assert_eq!(hex_sha(&b), m.sha256);
 
     // .objects에 temp 잔재 없음
-    let mut rd = tokio::fs::read_dir(d.path().join(".objects")).await.unwrap();
+    let mut rd = tokio::fs::read_dir(d.path().join(".objects"))
+        .await
+        .unwrap();
     while let Some(e) = rd.next_entry().await.unwrap() {
         let n = e.file_name();
         assert!(!n.to_string_lossy().starts_with(".tmp-"), "temp 잔재 발견");
@@ -233,7 +265,10 @@ async fn query_key_decoding_and_validation_contract() {
     // 인코딩된 슬래시(%2F)는 동일 객체를 가리켜야(서버가 디코드 → a/b 와 a%2Fb 동일)
     let res = app
         .clone()
-        .oneshot(writer_req("GET", "/api/files/skills/object?key=dir%2Fa.txt"))
+        .oneshot(writer_req(
+            "GET",
+            "/api/files/skills/object?key=dir%2Fa.txt",
+        ))
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK, "%2F는 동일 객체를 가리켜야");
@@ -241,7 +276,10 @@ async fn query_key_decoding_and_validation_contract() {
     // 이중 인코딩(%252F)은 리터럴 '%'가 되어 세그먼트 문법 위반 → 400
     let res = app
         .clone()
-        .oneshot(writer_req("GET", "/api/files/skills/object?key=dir%252Fa.txt"))
+        .oneshot(writer_req(
+            "GET",
+            "/api/files/skills/object?key=dir%252Fa.txt",
+        ))
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::BAD_REQUEST, "이중 인코딩은 400");
@@ -257,7 +295,10 @@ async fn query_key_decoding_and_validation_contract() {
     // 중복 key 파라미터 → 모호 → 400(추출 거부)
     let res = app
         .clone()
-        .oneshot(writer_req("GET", "/api/files/skills/object?key=a.txt&key=b.txt"))
+        .oneshot(writer_req(
+            "GET",
+            "/api/files/skills/object?key=a.txt&key=b.txt",
+        ))
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::BAD_REQUEST, "중복 key는 400");
@@ -266,7 +307,10 @@ async fn query_key_decoding_and_validation_contract() {
     let long = "a".repeat(1025);
     let res = app
         .clone()
-        .oneshot(writer_req("GET", &format!("/api/files/skills/object?key={long}")))
+        .oneshot(writer_req(
+            "GET",
+            &format!("/api/files/skills/object?key={long}"),
+        ))
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::BAD_REQUEST, "과길이 키는 400");
@@ -300,12 +344,16 @@ async fn internal_object_reads_are_no_store_and_vary_authorization() {
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK, "{method} 200");
         assert_eq!(
-            res.headers().get(header::CACHE_CONTROL).and_then(|v| v.to_str().ok()),
+            res.headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok()),
             Some("no-store, private"),
             "{method} Cache-Control"
         );
         assert_eq!(
-            res.headers().get(header::VARY).and_then(|v| v.to_str().ok()),
+            res.headers()
+                .get(header::VARY)
+                .and_then(|v| v.to_str().ok()),
             Some("Authorization"),
             "{method} Vary"
         );
@@ -326,7 +374,10 @@ async fn download_content_type_is_stored_type_and_206_has_all_headers() {
         .header(header::CONTENT_TYPE, "text/plain")
         .body(Body::from("hello world"))
         .unwrap();
-    assert_eq!(app.clone().oneshot(put).await.unwrap().status(), StatusCode::CREATED);
+    assert_eq!(
+        app.clone().oneshot(put).await.unwrap().status(),
+        StatusCode::CREATED
+    );
 
     // 전체 GET(200): Content-Type = 저장 타입 + no-store/Vary + ETag
     let res = app
@@ -336,16 +387,22 @@ async fn download_content_type_is_stored_type_and_206_has_all_headers() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
     assert_eq!(
-        res.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()),
+        res.headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
         Some("text/plain"),
         "다운로드 Content-Type은 저장 타입이어야(octet-stream 고정 아님)"
     );
     assert_eq!(
-        res.headers().get(header::CACHE_CONTROL).and_then(|v| v.to_str().ok()),
+        res.headers()
+            .get(header::CACHE_CONTROL)
+            .and_then(|v| v.to_str().ok()),
         Some("no-store, private")
     );
     assert_eq!(
-        res.headers().get(header::VARY).and_then(|v| v.to_str().ok()),
+        res.headers()
+            .get(header::VARY)
+            .and_then(|v| v.to_str().ok()),
         Some("Authorization")
     );
     assert!(res.headers().get(header::ETAG).is_some(), "200 ETag");
@@ -361,22 +418,33 @@ async fn download_content_type_is_stored_type_and_206_has_all_headers() {
     let res = app.oneshot(ranged).await.unwrap();
     assert_eq!(res.status(), StatusCode::PARTIAL_CONTENT);
     assert_eq!(
-        res.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()),
+        res.headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
         Some("text/plain"),
         "206 Content-Type도 저장 타입"
     );
     assert_eq!(
-        res.headers().get(header::CONTENT_RANGE).and_then(|v| v.to_str().ok()),
+        res.headers()
+            .get(header::CONTENT_RANGE)
+            .and_then(|v| v.to_str().ok()),
         Some("bytes 0-4/11")
     );
-    assert!(res.headers().get(header::LAST_MODIFIED).is_some(), "206 Last-Modified");
+    assert!(
+        res.headers().get(header::LAST_MODIFIED).is_some(),
+        "206 Last-Modified"
+    );
     assert_eq!(
-        res.headers().get(header::CACHE_CONTROL).and_then(|v| v.to_str().ok()),
+        res.headers()
+            .get(header::CACHE_CONTROL)
+            .and_then(|v| v.to_str().ok()),
         Some("no-store, private"),
         "206도 캐시 헤더"
     );
     assert_eq!(
-        res.headers().get(header::VARY).and_then(|v| v.to_str().ok()),
+        res.headers()
+            .get(header::VARY)
+            .and_then(|v| v.to_str().ok()),
         Some("Authorization")
     );
 }
@@ -390,10 +458,20 @@ async fn reserved_suffix_keys_rejected_at_runtime() {
     for key in ["foo.meta.json", "x/foo.bucket.json"] {
         let uri = format!("/api/files/skills/object?key={key}");
         let res = app.clone().oneshot(writer_req("PUT", &uri)).await.unwrap();
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST, "예약 접미사 {key}는 런타임 400");
+        assert_eq!(
+            res.status(),
+            StatusCode::BAD_REQUEST,
+            "예약 접미사 {key}는 런타임 400"
+        );
         // 상태뿐 아니라 에러 body 코드까지 계약대로(reserved_suffix) 잠금
-        let body = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let j: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(j["error"].as_str(), Some("reserved_suffix"), "{key} 에러 코드: {j}");
+        assert_eq!(
+            j["error"].as_str(),
+            Some("reserved_suffix"),
+            "{key} 에러 코드: {j}"
+        );
     }
 }
