@@ -250,10 +250,12 @@ test original_repro_concurrent_puts_do_not_abort_the_reconcile_pass ... ok
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.15s
 ```
 
-
 ---
 
-# 릴리스 게이트 r1 결함별 증거
+# 릴리스 게이트 결함별 증거 (전문 — 절단 없음)
+
+> ⚠ 개정판 이유: r2의 R-3′·R-4-noop′는 지휘자가 이 증거를 커밋할 때 `head -N`으로 **잘라 넣은 실수**다.
+> 아래는 `/tmp`의 원문을 **통째로** 옮긴 것이다(절단 0).
 
 ## R-1 — release 프로파일 통제 (계획이 필수로 못박은 2줄)
 
@@ -303,9 +305,7 @@ test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 139 filtered out; fi
 ════════════════════════════════════════════════════════════════════════════
 ```
 
-## R-3 — 증인 게이트의 술어 뮤테이션 감사 (8/8 RED · 살아남은 술어 0)
-
-게이트가 **자기 술어 하나가 약화된 뒤 다시 거짓 초록이 되지 않음**을 증명한다.
+## R-3 — 증인 게이트 술어 뮤테이션 감사 (8/8 RED · 살아남은 술어 0 · **전문**)
 
 ```
 ════════════════════════════════════════════════════════════════════════════════════
@@ -388,11 +388,154 @@ test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 139 filtered out; fi
    뮤턴트 적용   : 예
    selftest 출력 :
       == --selftest — 술어 × 케이스 (직교: 케이스 하나가 술어 하나만 죽인다) ==
+      -- ② 결과 게이트 --
+         [ok  ] (a) 1 ignored        rc=0    게이트=FAIL (기대 FAIL)  · [ok  ] 옛 파서=FAIL (기대 FAIL)
+         [ok  ] (b) 10 ignored       rc=0    게이트=FAIL (기대 FAIL)  · [ok  ] 옛 파서=PASS (기대 PASS)
+         [ok  ] (c) 전부 정상    rc=0    게이트=PASS (기대 PASS)  · [ok  ] 옛 파서=PASS (기대 PASS)
+         [ok  ] (d) 10 failed        rc=0    게이트=FAIL (기대 FAIL)  · [ok  ] 옛 파서=PASS (기대 PASS)
+         [ok  ] (e) cargo rc!=0      rc=101  게이트=FAIL (기대 FAIL)
+         [FAIL] (f) 결과 줄 0개  rc=0    게이트=PASS (기대 FAIL)
+      -- ① 발견 게이트 --
+         [ok  ] (g) 증인 누락             발견=FAIL (기대 FAIL)
+         [ok  ] (h) 조기매치+큰목록          발견=PASS (기대 PASS)
+         [ok  ] (i) 목록 rc!=0              발견=FAIL (기대 FAIL)
+      
+      SELFTEST: FAIL  (8/9)
+   exit code     : 1
+   판정          : RED  ✅ (죽었다)
+───────────────────────────────────────────────────────────────────────────────────
+■ M-PRED-RC
+   무엇을 지웠나 : verdict(): 'if [ "$2" -ne 0 ] … FAIL: cargo exit=…' **줄 삭제**
+   뮤턴트 적용   : 예
+   selftest 출력 :
+      == --selftest — 술어 × 케이스 (직교: 케이스 하나가 술어 하나만 죽인다) ==
+      -- ② 결과 게이트 --
+         [ok  ] (a) 1 ignored        rc=0    게이트=FAIL (기대 FAIL)  · [ok  ] 옛 파서=FAIL (기대 FAIL)
+         [ok  ] (b) 10 ignored       rc=0    게이트=FAIL (기대 FAIL)  · [ok  ] 옛 파서=PASS (기대 PASS)
+         [ok  ] (c) 전부 정상    rc=0    게이트=PASS (기대 PASS)  · [ok  ] 옛 파서=PASS (기대 PASS)
+         [ok  ] (d) 10 failed        rc=0    게이트=FAIL (기대 FAIL)  · [ok  ] 옛 파서=PASS (기대 PASS)
+         [FAIL] (e) cargo rc!=0      rc=101  게이트=PASS (기대 FAIL)
+         [ok  ] (f) 결과 줄 0개  rc=0    게이트=FAIL (기대 FAIL)
+      -- ① 발견 게이트 --
+         [ok  ] (g) 증인 누락             발견=FAIL (기대 FAIL)
+         [ok  ] (h) 조기매치+큰목록          발견=PASS (기대 PASS)
+         [ok  ] (i) 목록 rc!=0              발견=FAIL (기대 FAIL)
+      
+      SELFTEST: FAIL  (8/9)
+   exit code     : 1
+   판정          : RED  ✅ (죽었다)
+───────────────────────────────────────────────────────────────────────────────────
+■ M-PRED-DISC
+   무엇을 지웠나 : discover(): MISSING WITNESS 줄의 **bad=1 삭제**(증인이 없어도 게이트가 실패하지 않는다)
+   뮤턴트 적용   : 예
+   selftest 출력 :
+      == --selftest — 술어 × 케이스 (직교: 케이스 하나가 술어 하나만 죽인다) ==
+      -- ② 결과 게이트 --
+         [ok  ] (a) 1 ignored        rc=0    게이트=FAIL (기대 FAIL)  · [ok  ] 옛 파서=FAIL (기대 FAIL)
+         [ok  ] (b) 10 ignored       rc=0    게이트=FAIL (기대 FAIL)  · [ok  ] 옛 파서=PASS (기대 PASS)
+         [ok  ] (c) 전부 정상    rc=0    게이트=PASS (기대 PASS)  · [ok  ] 옛 파서=PASS (기대 PASS)
+         [ok  ] (d) 10 failed        rc=0    게이트=FAIL (기대 FAIL)  · [ok  ] 옛 파서=PASS (기대 PASS)
+         [ok  ] (e) cargo rc!=0      rc=101  게이트=FAIL (기대 FAIL)
+         [ok  ] (f) 결과 줄 0개  rc=0    게이트=FAIL (기대 FAIL)
+      -- ① 발견 게이트 --
+         [FAIL] (g) 증인 누락             발견=PASS (기대 FAIL)
+         [ok  ] (h) 조기매치+큰목록          발견=PASS (기대 PASS)
+         [ok  ] (i) 목록 rc!=0              발견=FAIL (기대 FAIL)
+      
+      SELFTEST: FAIL  (8/9)
+   exit code     : 1
+   판정          : RED  ✅ (죽었다)
+───────────────────────────────────────────────────────────────────────────────────
+■ M-PRED-LIST-RC
+   무엇을 지웠나 : discover(): LIST FAILED 블록의 **bad=1 삭제**(cargo --list가 죽어도 게이트가 실패하지 않는다)
+   뮤턴트 적용   : 예
+   selftest 출력 :
+      == --selftest — 술어 × 케이스 (직교: 케이스 하나가 술어 하나만 죽인다) ==
+      -- ② 결과 게이트 --
+         [ok  ] (a) 1 ignored        rc=0    게이트=FAIL (기대 FAIL)  · [ok  ] 옛 파서=FAIL (기대 FAIL)
+         [ok  ] (b) 10 ignored       rc=0    게이트=FAIL (기대 FAIL)  · [ok  ] 옛 파서=PASS (기대 PASS)
+         [ok  ] (c) 전부 정상    rc=0    게이트=PASS (기대 PASS)  · [ok  ] 옛 파서=PASS (기대 PASS)
+         [ok  ] (d) 10 failed        rc=0    게이트=FAIL (기대 FAIL)  · [ok  ] 옛 파서=PASS (기대 PASS)
+         [ok  ] (e) cargo rc!=0      rc=101  게이트=FAIL (기대 FAIL)
+         [ok  ] (f) 결과 줄 0개  rc=0    게이트=FAIL (기대 FAIL)
+      -- ① 발견 게이트 --
+         [ok  ] (g) 증인 누락             발견=FAIL (기대 FAIL)
+         [ok  ] (h) 조기매치+큰목록          발견=PASS (기대 PASS)
+         [FAIL] (i) 목록 rc!=0              발견=PASS (기대 FAIL)
+      
+      SELFTEST: FAIL  (8/9)
+   exit code     : 1
+   판정          : RED  ✅ (죽었다)
+───────────────────────────────────────────────────────────────────────────────────
+■ M-SIGPIPE
+   무엇을 지웠나 : has_witness(): 파일 직접 grep → **'cat FILE | grep -q' 파이프라인으로 되돌림**(pipefail+SIGPIPE=141)
+   뮤턴트 적용   : 예
+   selftest 출력 :
+      == --selftest — 술어 × 케이스 (직교: 케이스 하나가 술어 하나만 죽인다) ==
+      -- ② 결과 게이트 --
+         [ok  ] (a) 1 ignored        rc=0    게이트=FAIL (기대 FAIL)  · [ok  ] 옛 파서=FAIL (기대 FAIL)
+         [ok  ] (b) 10 ignored       rc=0    게이트=FAIL (기대 FAIL)  · [ok  ] 옛 파서=PASS (기대 PASS)
+         [ok  ] (c) 전부 정상    rc=0    게이트=PASS (기대 PASS)  · [ok  ] 옛 파서=PASS (기대 PASS)
+         [ok  ] (d) 10 failed        rc=0    게이트=FAIL (기대 FAIL)  · [ok  ] 옛 파서=PASS (기대 PASS)
+         [ok  ] (e) cargo rc!=0      rc=101  게이트=FAIL (기대 FAIL)
+         [ok  ] (f) 결과 줄 0개  rc=0    게이트=FAIL (기대 FAIL)
+      -- ① 발견 게이트 --
+         [ok  ] (g) 증인 누락             발견=FAIL (기대 FAIL)
+         [FAIL] (h) 조기매치+큰목록          발견=FAIL (기대 PASS)
+         [ok  ] (i) 목록 rc!=0              발견=FAIL (기대 FAIL)
+      
+      SELFTEST: FAIL  (8/9)
+   exit code     : 1
+   판정          : RED  ✅ (죽었다)
+───────────────────────────────────────────────────────────────────────────────────
+■ M-OLDPARSER
+   무엇을 지웠나 : verdict(): 숫자 술어 4개를 **옛 파서(grep -vc '0 ignored')로 치환**(부분문자열 회귀 — '10 ignored'⊃'0 ignored')
+   뮤턴트 적용   : 예
+   selftest 출력 :
+      == --selftest — 술어 × 케이스 (직교: 케이스 하나가 술어 하나만 죽인다) ==
+      -- ② 결과 게이트 --
+         [FAIL] (a) 1 ignored        rc=0    게이트=PASS (기대 FAIL)  · [ok  ] 옛 파서=FAIL (기대 FAIL)
+         [FAIL] (b) 10 ignored       rc=0    게이트=PASS (기대 FAIL)  · [ok  ] 옛 파서=PASS (기대 PASS)
+         [ok  ] (c) 전부 정상    rc=0    게이트=PASS (기대 PASS)  · [ok  ] 옛 파서=PASS (기대 PASS)
+         [FAIL] (d) 10 failed        rc=0    게이트=PASS (기대 FAIL)  · [ok  ] 옛 파서=PASS (기대 PASS)
+         [FAIL] (e) cargo rc!=0      rc=101  게이트=PASS (기대 FAIL)
+         [FAIL] (f) 결과 줄 0개  rc=0    게이트=PASS (기대 FAIL)
+      -- ① 발견 게이트 --
+         [ok  ] (g) 증인 누락             발견=FAIL (기대 FAIL)
+         [ok  ] (h) 조기매치+큰목록          발견=PASS (기대 PASS)
+         [ok  ] (i) 목록 rc!=0              발견=FAIL (기대 FAIL)
+      
+      SELFTEST: FAIL  (4/9)
+   exit code     : 1
+   판정          : RED  ✅ (죽었다)
+═══════════════════════════════════════════════════════════════════════════════════
+ 원복 무결성 — **뮤턴트는 사본에만 가했다. 원본은 손대지 않았다.**
+   md5(before) = 5898670238661b81864cbbf5fe24eddc
+   md5(after)  = 5898670238661b81864cbbf5fe24eddc
+   ⇒ ✅ **일치 — 스크립트 무결**
+
+ 원본 --selftest 재통과:
+   == --selftest — 술어 × 케이스 (직교: 케이스 하나가 술어 하나만 죽인다) ==
+   -- ② 결과 게이트 --
+      [ok  ] (a) 1 ignored        rc=0    게이트=FAIL (기대 FAIL)  · [ok  ] 옛 파서=FAIL (기대 FAIL)
+      [ok  ] (b) 10 ignored       rc=0    게이트=FAIL (기대 FAIL)  · [ok  ] 옛 파서=PASS (기대 PASS)
+      [ok  ] (c) 전부 정상    rc=0    게이트=PASS (기대 PASS)  · [ok  ] 옛 파서=PASS (기대 PASS)
+      [ok  ] (d) 10 failed        rc=0    게이트=FAIL (기대 FAIL)  · [ok  ] 옛 파서=PASS (기대 PASS)
+      [ok  ] (e) cargo rc!=0      rc=101  게이트=FAIL (기대 FAIL)
+      [ok  ] (f) 결과 줄 0개  rc=0    게이트=FAIL (기대 FAIL)
+   -- ① 발견 게이트 --
+      [ok  ] (g) 증인 누락             발견=FAIL (기대 FAIL)
+      [ok  ] (h) 조기매치+큰목록          발견=PASS (기대 PASS)
+      [ok  ] (i) 목록 rc!=0              발견=FAIL (기대 FAIL)
+   
+   SELFTEST: PASS  (9/9 · 케이스·술어의 정본 = §0-h 매트릭스)
+   exit=0
+═══════════════════════════════════════════════════════════════════════════════════
 ```
 
-## R-4 — Phase G의 공허한 단언 봉인 (결정적 증거)
+## R-4 — Phase G 공허함 봉인 (결정적 증거 · **전문**)
 
-`M-REMOVE-NOOP`(remove 분기가 **아예 한 번도 안 돈다**)에서 **옛 증인은 exit 0으로 초록**이었다.
+`M-REMOVE-NOOP`(recovery remove 분기가 **아예 한 번도 안 돈다**)에서 **옛 증인은 exit 0으로 초록**이었다.
 
 ```
 ════════════════════════════════════════════════════════════════════════════════════
@@ -455,6 +598,58 @@ R-4가 지적한 공허함(세 겹):
       test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.09s
       thread 'phase_g_recover_graves_survives_vanishing_graves' (22323220) panicked at tests/reconcile_vanishing_entries.rs:382:37:
       K의 정본은 살아남는다. round=0 sha=7bf240d68ba01d7cfc7972563fd777e2b67d6a2a11e05b2d638f0b44bfcd7ebb: No such file or directory (os error 2)
+      >>> cargo exit = 101
+   판정: RED ✅ — 쓰레기 무덤 + 바이트 동일성 단언이 **분기 선택**을 핀한다.
+
+───────────────────────────────────────────────────────────────────────────────────
+■ [M4] 뮤턴트 **M-REMOVE-NOOP** (remove 분기가 **아무것도 하지 않는다** — 무덤을 안 지운다)
+      - let Seen::Present(()) = e.remove().await? else {...}; atomic::fsync_dir(&objects).await?;
+      + continue;
+   기대: 새 증인 **RED**(K_KEEP의 무덤이 남는다 — 우리는 건드리지 않았으므로 프로덕션만이 지울 수 있다)
+      test phase_g_recover_graves_survives_vanishing_graves ... FAILED
+      test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.05s
+      thread 'phase_g_recover_graves_survives_vanishing_graves' (22323994) panicked at tests/reconcile_vanishing_entries.rs:372:13:
+      K_KEEP의 무덤이 남아 있다 — 우리는 건드리지 않았으므로 **패스가 remove 분기를 타지 않았다**. round=0 sha=7bf240d68ba01d7cfc7972563fd777e2b67d6a2a11e05b2d638f0b44bfcd7ebb
+      >>> cargo exit = 101
+   판정: RED ✅ — K_KEEP 단언이 'remove 분기가 아예 안 돌았다'를 잡는다.
+
+───────────────────────────────────────────────────────────────────────────────────
+■ [M4-old] **같은 뮤턴트 · 옛 증인** — 옛 증인은 이것을 잡는가?
+   (뮤턴트 M-REMOVE-NOOP 유지 · 테스트 파일만 HEAD의 **옛 판본**으로 되돌린다)
+      test phase_g_recover_graves_survives_vanishing_graves ... ok
+      test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.07s
+      >>> cargo exit = 0
+   판정: **PASS = 옛 증인은 이 뮤턴트를 놓친다** ⚠️⚠️
+   ⇒ 옛 Phase G는 **remove 분기가 아예 한 번도 돌지 않아도 초록이었다.**
+     (옛 증인은 무덤을 **전부 스스로 지웠으므로** grave_count==0 도 stepped_K==12 도 자동으로 참이었다.)
+   ⇒ **이것이 R-4가 말한 '공허한 통과'의 결정적 증거다. 새 증인은 같은 뮤턴트에 RED다(M4).**
+
+═══════════════════════════════════════════════════════════════════════════════════
+ 요약 — 뮤턴트 × 증인
+
+   뮤턴트          │ **고친** 증인            │ **옛** 증인
+   ───────────────────┼──────────────────────────────┼───────────────────
+   M-REMOVE-RAW       │ RED (exit 101) ✅ 죽인다 │ RED — (창을 밟으면) 죽인다
+     └ 창 미보행 시 │ RED (killed_K=0) ✅ 소리친다 │ **GREEN — 놓친다** ⚠️ (M2)
+   M-BRANCH-RENAME    │ RED (exit 101) ✅ 죽인다 │ GREEN — 놓친다(무덤=정본 동일)
+   M-REMOVE-NOOP      │ RED (exit 101) ✅ 죽인다 │ **GREEN (exit 0) — 놓친다** ⚠️ (M4-old · 실측)
+
+ ⇒ **고친 증인은 공허하지 않다**: 옛 증인이 놓치던 뮤턴트 3종(창 미보행 · 분기 선택 · remove no-op)을
+   전부 RED로 만든다. 그리고 **M4-old는 옛 증인의 공허함을 실측으로 증명한다**(같은 뮤턴트, 초록).
+
+ 원복 무결성:
+   md5(src/store/reconcile.rs) before = dd58c73a272051c2524e32982f077b0a
+   md5(src/store/reconcile.rs) after  = dd58c73a272051c2524e32982f077b0a
+   ⇒ ✅ **일치 — 프로덕션 로직 변경 0**
+   임시 프로브 tests/f14_r4_probe.rs → 삭제됨 ✅
+
+ 원복 후 고친 증인 3개 재실행:
+   test phase_g_recover_graves_survives_vanishing_graves ... ok
+   test phase_t_temp_deletion_counts_only_what_we_deleted ... ok
+   test phase_e_entry_loop_survives_vanishing_entries ... ok
+   test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.12s
+   >>> cargo exit = 0
+═══════════════════════════════════════════════════════════════════════════════════
 ```
 
 ## 최종 트리 — 증인 게이트 · 스위트
@@ -520,4 +715,15 @@ R-4가 지적한 공허함(세 겹):
    ③ characterization exit=0 (failed=0) · 전체 exit=0 (failed=0 · ignored=0)
    ④ build 경고=0 · clippy exit=0 (10) · fmt exit=1
    ⇒ 합계 지표 = 11  (⚠ 확인 필요)
+════════════════════════════════════════════════════════════════════════════════
+
+── ④ 보충: fmt/clippy **델타** 판정 ────────────────────────────────────────────
+  ⚠ `cargo fmt --check`는 **HEAD에서 이미 exit=1**이다(레포 전역 기존 상태).
+     베이스(HEAD) Diff 블록 = 72  ·  내 트리 Diff 블록 = 72  ⇒ **동일**
+     내가 수정한 tests/reconcile_vanishing_entries.rs 는 fmt diff 목록에 **없다**:
+       $ rustfmt --edition 2021 --check tests/reconcile_vanishing_entries.rs → exit=0 · 출력 0줄 ✅
+  clippy: 베이스 exit=0 · 내 트리 exit=0 · 경고 집합 **완전 동일**(diff 없음)
+     내가 수정한 파일에 대한 clippy 경고 **0건**
+  ⇒ **fmt 델타 0 · clippy 델타 0** (기존 경고는 내 변경과 무관한 src/auth.rs · src/config.rs 등)
+  ⇒ cargo build 경고 **0** ✅
 ```
