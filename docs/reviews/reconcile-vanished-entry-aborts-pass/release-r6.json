@@ -1,0 +1,19 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "release",
+  "verdict": "approve",
+  "summary": "Ship: R-1 is closed with no regression. The SHA-stamped artifact contains complete output and exit 0 for both canonical release commands, matches verification.md byte-for-byte, and all post-green commits affect only review evidence; executable and configuration inputs remain unchanged.",
+  "planFile": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+  "planInDiff": null,
+  "reviewedFileCount": 34,
+  "target": "branch diff against main",
+  "reviewedSha": "15a0ee9fd691d971ee5209ebd46883d3496c5204",
+  "reviewedTree": "1e43a9b024d7e7a5da4dce2d5153f7a4061f7abf",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 0,
+  "planFindingCount": 0,
+  "findings": [],
+  "next_steps": []
+}

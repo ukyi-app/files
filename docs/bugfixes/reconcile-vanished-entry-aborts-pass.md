@@ -3,7 +3,7 @@ bugfix: reconcile-vanished-entry-aborts-pass
 invariant-class: bugfix
 entry-track: bug
 review-track: standard
-pipeline-stage: release-gate
+pipeline-stage: finishing
 issue-tracker: local
 symptom: "reconcile가 .objects 스냅샷을 뜬 뒤 항목별 stat/read를 하는 사이, 동시 put_stream이 .tmp-<uniq>를 최종 blob 이름으로 rename하면, 사라진 경로에 대한 stat/read가 ENOENT를 하드 io::Error로 전파해 **패스 전체가 Err로 중단**된다(그 항목만 건너뛰는 게 아니라). 쓰기 트래픽이 있는 동안 reconcile이 사실상 완주하지 못해 GC·temp 정리·격리가 안 돌고 디스크가 찬다."
 red-baseline: 3b1e44f608cd00d0a580a3f5deb595d85a28a9d9
@@ -3191,3 +3191,18 @@ durability 0.55 · bypass 6, 치명 0/3)을 `pipeline-stage: design`인 채로 p
 
 아티팩트: `docs/reviews/reconcile-vanished-entry-aborts-pass/structure-r2.json` (reviewedSha `582d2b0`).
 **B3 frontier 열림** → `pipeline-stage: executing → verification`.
+
+### Codex Release Review — r1~r6
+
+릴리스 게이트는 **6라운드**가 걸렸다(수동 라운드 3~6 승인). 라운드별:
+- **r1** (4건): R-1(release 프로파일) · R-2(원 repro null) · R-3(게이트 뮤테이션 감사) · R-4(Phase G 공허) 전부 **Accept**.
+- **r2** (4건): R-2를 봉인하려 **RED 4차 재포착**(원 안무 = 정확히 40 puts, 1000-put은 stress로 분리) · R-3'/R-4-noop'(지휘자가 head -N으로 자른 증거 절단 실수) · R-4-plan(계획 계약 갱신) 전부 **Accept**.
+- **자체 발견(게이트 밖)**: 게이트를 직접 재확인하다 **phase_g 증인이 green.sha에서 5/5 결정적 실패**함을 잡았다 — R-4를 고친 서브에이전트의 *"20/20 GREEN"*이 거짓이었다(`verify-flip`이 못 잡은 이유: `characterizationCmd`에 `reconcile_vanishing_entries` 없음). 근본 원인은 프로덕션이 아니라 구 통합 무대의 **동시성 랑데부 하이젠버그**. **9번째 훅 결정적 park + lib 이전**으로 봉인, 지휘자가 clean 재빌드로 20/20 직접 확인.
+- **r3** (R-1만): 잘못된 release 타깃. **r4** (R-1만): 수동 편집이라 감사 불가. **r5** (R-1만): grep 필터로 raw가 아님. **r6**: **approve** — SHA-스탬프 완전 raw capture로 봉인.
+
+> **r6**: *"**Ship**: R-1 is closed with no regression. The SHA-stamped artifact contains complete output and exit 0
+> for both canonical release commands, matches verification.md byte-for-byte, and all post-green commits affect
+> only review evidence; executable and configuration inputs remain unchanged."*
+
+아티팩트: `docs/reviews/reconcile-vanished-entry-aborts-pass/release-r{1..6}.json`.
+**릴리스 게이트 종료 → `pipeline-stage: release-gate → finishing`.**
