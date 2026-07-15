@@ -261,18 +261,43 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
 ## R-1 — release 프로파일 통제 (계획 :2204-2205의 정확한 2줄)
 
+> 완전 원문(grep 필터 0 · stdout+stderr 통째 · SHA 스탬프). 별도 아티팩트
+> `release-profile-capture.txt`와 바이트 동일하게 이 파일에 옮겨졌다.
+
 ```
+# release-profile capture — F-14 R-1 (B-1 profile-bias compensating control)
+# green.sha (lock): b2d0f3120ca97d7e25f0c1b2b9611704748bed5c
+# captured at HEAD: 3eb727e (b2d0f31 이후 커밋은 전부 docs/reviews/ 증거 문서 — release가 의존하는 src/tests/scripts는 b2d0f31과 바이트 동일)
+# tree:      e7166e0ea9cf7d8f950498f09d9f470fe4ebb4b1
+# captured by: bash (직접 실행, grep 필터 0, stdout+stderr 통째)
+# plan lines 2204-2205 canonical commands
+
+======================================================================
 $ cargo test --release --test reconcile_vanishing_entries
+======================================================================
+    Finished `release` profile [optimized] target(s) in 0.24s
+     Running tests/reconcile_vanishing_entries.rs (target/release/deps/reconcile_vanishing_entries-cdb69f2d3843238f)
+
 running 2 tests
 test phase_t_temp_deletion_counts_only_what_we_deleted ... ok
 test phase_e_entry_loop_survives_vanishing_entries ... ok
-test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.81s
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.76s
+
 [exit=0]
 
+======================================================================
 $ cargo test --release --lib -- reconcile_pass_survives_an_entry_that_vanishes_after_the_snapshot reconcile_pass_survives_a_temp_that_vanishes_after_the_snapshot
+======================================================================
+    Finished `release` profile [optimized] target(s) in 0.06s
+     Running unittests src/lib.rs (target/release/deps/files-9325554f54819e92)
+
+running 2 tests
 test store::pins::tests::vanished_temp_regression::reconcile_pass_survives_a_temp_that_vanishes_after_the_snapshot ... ok
 test store::pins::tests::vanished_entry_regression::reconcile_pass_survives_an_entry_that_vanishes_after_the_snapshot ... ok
+
 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 140 filtered out; finished in 0.28s
+
 [exit=0]
 ```
 

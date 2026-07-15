@@ -1,0 +1,33 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "release",
+  "verdict": "needs-attention",
+  "summary": "No-ship: R-1’s formatting defects are fixed, but its second release-profile result remains unauditable as a fresh machine capture.",
+  "planFile": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+  "planInDiff": null,
+  "reviewedFileCount": 32,
+  "target": "branch diff against main",
+  "reviewedSha": "3eb727e9a5c6a9d8c2ac951867740973b1354e8d",
+  "reviewedTree": "e7166e0ea9cf7d8f950498f09d9f470fe4ebb4b1",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 1,
+  "planFindingCount": 0,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "Missing verification: R-1 reuses the rejected release transcript",
+      "body": "The second command omits Cargo’s `running 2 tests` preamble, contradicting the claimed untruncated raw capture. After normalizing only `[exit=0]`, lines 272–276 are byte-for-byte identical to the round-4 manual block, including the 0.28s duration. No raw capture, generator, invocation record, or SHA-stamped provenance was committed, so the sole release-profile control still cannot be distinguished from reused manual text. The stale `/tmp` reference, duplicate header, commands, exits, and fences are otherwise corrected.",
+      "file": "docs/reviews/reconcile-vanished-entry-aborts-pass/verification.md",
+      "line_start": 260,
+      "line_end": 276,
+      "confidence": 0.99,
+      "recommendation": "Commit a script-owned record keyed to green SHA b2d0f31 containing both exact commands, complete stdout/stderr—including both test-count preambles—and numeric exits, then generate verification.md from that record.",
+      "isPlanFinding": false
+    }
+  ],
+  "next_steps": [
+    "Replace only the R-1 evidence and repeat the scope-pinned R-1 audit; do not rerun or revise R-2 through R-4."
+  ]
+}
