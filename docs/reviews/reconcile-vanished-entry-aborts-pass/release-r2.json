@@ -1,20 +1,69 @@
 {
-  "ok": false,
-  "status": "review-incomplete",
+  "ok": true,
+  "status": "ok",
   "kind": "release",
-  "verdict": null,
-  "summary": null,
+  "verdict": "needs-attention",
+  "summary": "No-ship. R-1 is closed and the red/green records are internally consistent and reachable, but R-2 substitutes a 1,000-put stress case for the original 40-put repro, R-3's mutation transcript is incomplete, and R-4's required no-op proof and canonical acceptance contract remain unresolved.",
   "planFile": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
   "planInDiff": null,
-  "reviewedFileCount": 26,
+  "reviewedFileCount": 27,
   "target": "branch diff against main",
-  "reviewedSha": "6f62e3a9d0389f21605316fa59bf9e369de13f77",
-  "reviewedTree": "cb123e3562586dc16e88d2c199ece60e6b67af4f",
-  "codexStatus": 1,
-  "parseError": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Jul 20th, 2026 4:42 AM.",
-  "findingCount": 0,
-  "planFindingCount": 0,
-  "findings": [],
-  "next_steps": [],
-  "hint": "Codex returned no usable verdict (codex run failed, was empty, or output did not parse). Re-run; if it persists, check `/codex:setup`."
+  "reviewedSha": "dbe618de57e9ee0bf32d10d4ea55677bd14417e0",
+  "reviewedTree": "c1e6d41c38950b8637de6fe2649702201cd04dc2",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 4,
+  "planFindingCount": 1,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "Missing verification: original 40-put repro",
+      "body": "The claimed unminimised repro is not the original forty-put choreography. The replacement uses 40 workers for 25 rounds, totaling 1,000 puts, whereas the original adversarial case performs exactly one put for each of 40 tasks. For this timing-sensitive race, failure at the amplified workload does not prove the original 40-put scenario fails at red and disappears at green.",
+      "file": "tests/repro_concurrent_puts_reconcile.rs",
+      "line_start": 71,
+      "line_end": 75,
+      "confidence": 0.99,
+      "recommendation": "Commit a script-owned repro that preserves the original 40 total puts while adding non-vacuous pass/race witnesses, then regenerate both verify-records and verification output. Keep the 1,000-put test only as separate stress coverage.",
+      "isPlanFinding": false
+    },
+    {
+      "severity": "high",
+      "title": "Missing verification: six R-3 gate mutations",
+      "body": "The committed mutation audit ends immediately after starting M-PRED-N0. It contains complete output only for IGN and FAIL; N0 has no result, and RC, DISC, LIST-RC, SIGPIPE, and OLDPARSER have no raw execution records. The stated 8/8 result therefore is not supported by the committed evidence required to prove that no gate predicate survived.",
+      "file": "docs/reviews/reconcile-vanished-entry-aborts-pass/verification.md",
+      "line_start": 386,
+      "line_end": 391,
+      "confidence": 1,
+      "recommendation": "Commit uninterrupted raw output and exit status for all eight final-tree mutants, plus a final tally demonstrating zero survivors.",
+      "isPlanFinding": false
+    },
+    {
+      "severity": "high",
+      "title": "Missing verification: decisive Phase G no-op mutant",
+      "body": "The transcript says M2 and M4 prove the new witness is non-vacuous, but M2 merely stops the test's external K-grave deletions while leaving production's remove branch active. After M3, the evidence block ends; no M-REMOVE-NOOP/M4 command or old-green/new-red output is committed. Thus the asserted decisive proof that the witness fails when production recovery does nothing is absent.",
+      "file": "docs/reviews/reconcile-vanished-entry-aborts-pass/verification.md",
+      "line_start": 429,
+      "line_end": 458,
+      "confidence": 1,
+      "recommendation": "Commit the raw M-REMOVE-NOOP mutation transcript showing the old witness exiting 0 and the final witness failing, including exact commands, tree identities, output, and exit codes.",
+      "isPlanFinding": false
+    },
+    {
+      "severity": "high",
+      "title": "Phase G acceptance contract still specifies the rejected vacuous witness",
+      "body": "The canonical plan still requires deleting every remaining grave and deriving remove-branch coverage from stepped_K—the exact construction R-4 found vacuous. The implementation now uses K_KILL/K_KEEP and garbage graves, but the release requirements still authorize the weak witness, leaving the plan and shipped test inconsistent.",
+      "file": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+      "line_start": 2414,
+      "line_end": 2414,
+      "confidence": 1,
+      "recommendation": "Replace the stale Phase G row with the implemented K_KILL/K_KEEP contract, unlink-race witness, untouched keep class, garbage-grave corruption check, and required no-op mutation proof.",
+      "isPlanFinding": true
+    }
+  ],
+  "next_steps": [
+    "Restore an exact 40-put script-owned repro and refresh red/green records.",
+    "Commit complete raw R-3 output for every declared mutation.",
+    "Commit the missing R-4 no-op mutation proof and update the Phase G plan contract.",
+    "Repeat the scoped release gate after the evidence artifacts are complete."
+  ]
 }
