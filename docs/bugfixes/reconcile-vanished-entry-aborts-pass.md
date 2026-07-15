@@ -2199,6 +2199,27 @@ cargo test --release --lib -- reconcile_pass_survives_an_entry_that_vanishes_aft
                              reconcile_pass_survives_a_temp_that_vanishes_after_the_snapshot
 ```
 
+**3-a) 원 repro(reproCmd) + stress(별도) — R-2′**
+
+```
+cargo test --test repro_concurrent_puts_reconcile    # reproCmd = 원 40-put 안무(정본 증거)
+cargo test --test stress_concurrent_puts_reconcile   # 증폭 1,000-put stress(별도 커버리지 — reproCmd 아님)
+```
+
+> **repro 규모 = 정확히 40 total puts**(`PUT_WORKERS = 40` × `PUTS_PER_WORKER = 1` = `TOTAL_PUTS = 40`).
+> 이것이 **`reproCmd`의 정본**이며 진단이 적은 원 안무
+> (`adversarial.rs::concurrent_nested_puts_with_reconcile_loop_preserve_all` — 40 tasks × put 1개)와
+> **글자 그대로 같은 put 안무**다(키 `dir/sub/file-{i}.bin` · 바디 `vec![i; 200]`). 재현율은 **오직
+> reconcile/관측 쪽 밀도**(sleep 제거·`RECONCILE_LOOPS = 4`·`OBSERVER_LOOPS = 8`·`DECOY_BLOBS = 100`)로만
+> 올린다 — **put 수는 불변**이다. 비공허 자기검증: **반복 증인**(`overlapped ≥ MIN_OVERLAPPED_PASSES = 3`)
+> ∧ **레이스 증인**(`put_temp_vanishes = vanished_during_pass − passes ≥ MIN_PUT_TEMP_VANISHES = 20` —
+> `.objects`에 `.tmp-`를 만드는 주체가 put과 reconcile의 gc-pending 둘뿐이라 **산술로 강제**된다) ·
+> red 실패 메시지에 **`PASS ABORTED`**. 실측 **RED 20/20 FAIL · GREEN 20/20 PASS**.
+> ⚠ **증폭된 1,000-put(`40 × 25`)은 `tests/stress_concurrent_puts_reconcile.rs`로 분리**됐다 —
+> **timing-sensitive race라 증폭 workload의 실패가 원 40-put 시나리오를 증명하지 않으므로**(R-2′) **stress로만**
+> 유지한다. 두 파일은 **게이트 레지스트리 증인이 아니다**(`scripts/f14-witness-gate.sh`의 `WITNESSES`에 미등록 —
+> reproCmd/stress는 릴리스 게이트 커버리지이지 F-14 증인이 아니다).
+
 ⚠ **`tests/reconcile_fd_pressure.rs`(W15′)는 존재하지 않는다** — **fd를 하나도 더 쓰지 않으므로 잴 것이
 없다**(C안의 fd 압박 밴드 C-5가 **소멸**했다).
 ⚠ **W5e′ · W6b는 프로브 후 skip될 수 있다**(root) — **사유를 출력한다. 조용한 GREEN 금지.**
@@ -2248,6 +2269,7 @@ cargo test --release --lib -- reconcile_pass_survives_an_entry_that_vanishes_aft
 | **W-LOG-D** *(★r20 → **★r26에서 전수화 완결**)* · **차단 요건** | 같음 (`pre_entry` + `pre_grave` + `post_grave` + `pre_recover_grave`) | **밟을 수 있는 skip 팔 *전부*의 침묵**(무대 6개 · 정본 = `log_witness.rs`의 전수표). **①`:236`** Temp `metadata()` — grace 초과 temp를 소멸 · **②`:244`** Temp `remove()` — ★신규 · 아래 α/β · **③`:252`** Blob `read()` — 비트로트 blob 소멸(자기검증: **`.corrupt` 부재** ⇒ 격리 블록 **미도달** ⇒ `:257`이 아니라 `:252`다) · **④`:280`** `grave()` `SourceGone` — 손으로 심은 만료 tombstone + `pre_grave`에서 정본 삭제(자기검증: **`post_grave` 0회** ⇒ 무덤 미탄생 ⇒ `SourceGone` 팔이다) · **⑤`:149`** 무덤 `remove()` — 정본 **무손상** ∧ **무덤 내용은 쓰레기**(자기검증: 쓰레기가 정본을 덮지 않았다 ⇒ rename 분기가 **아니었다**) · **⑥`:154`** 무덤 `rename_durable_to()` — 정본 부재. 무대 ①②③④⑤는 **모든 레벨 0건**, ⑥은 §하류 표 4·5의 **기존 INFO 2건**을 기대값으로 단언한다. **★ 무대 ②의 α/β 논증**(`:236`과 `:244`는 관측 결과가 같으므로 **갈라야 한다**): 첫 `pre_entry`에서 **`.objects`를 통째로 옮긴다**(재생성 없음) ⇒ `de.metadata()`는 **열린 dir fd 기준 `fstatat`**라 **`Ok`**, `remove_file(de.path())`는 **경로 기준**이라 **ENOENT**다. **β**(`age ≤ grace` ⇒ `remove()` 미도달) ⇒ 계수 **0** ⇒ 가드 미발화 ⇒ `write_atomic`이 `.objects`를 **되살리고** 패스 **`Ok`** · **α**(`age > grace` ⇒ `remove()` 도달) ⇒ 계수 **1** ⇒ 가드 ⇒ **`Err(NotFound)`**. **두 실행은 `now`만 다르다** ⇒ β의 `Ok`가 *"`file_type()`도 `metadata()`도 계수하지 않았다"*를 증명하고, 그러면 α에서 계수를 올릴 수 있는 곳은 **`remove()` 하나뿐**이다 ⇒ **α는 `:244`를 밟았다** ∎ (β가 RED가 되면 전제가 깨진 것이고 **조용한 초록이 불가능하다**). ⚠⚠ **이것이 없으면 6개 팔의 로깅 뮤턴트가 전부 전 스위트를 통과한다**(실측) ⇒ **W10b와 같은 등급의 이식 차단 요건** | **green only** (실측 GREEN) |
 | ~~**W-REG**~~ *(★r21 → **r22/P-35·P-36에서 폐기**)* | ~~`pins.rs` 인라인~~ | ~~`current_exe() --list`로 자기 레지스트리를 묻는다~~ | **폐기.** ⑴ **목록이 두 곳이 되어 반드시 어긋난다**(Codex r22의 simpler alternative) ⑵ ⚠⚠ **그것은 `#[ignore]` 한 줄로 무력화된다 — 자기가 막겠다던 바로 그 공격에**(실측 §B-1 0-e: W-REG에 `#[ignore]` + `mod log_witness;` 삭제 ⇒ lib **128 passed; 1 ignored** · **exit 0**). ⇒ **레지스트리 게이트는 감사 대상 하네스 *밖*에 있어야 한다** ⇒ **`scripts/f14-witness-gate.sh` 하나가 단일 권위다** |
 | 기존 | — | 회귀 증인 2개(RED→GREEN) · 대조군 · **characterization**(⚠ **합계는 트리마다 다르다 — §B-1 acceptance 2)의 표가 정본이고, 게이트는 합계가 아니라 `0 failed`다**. 여기서 숫자를 반복하지 않는다 — ★r25/P-40) · **강화된 `tests/adversarial.rs`**(`let _ =` → `.expect(…)`) | — |
+| **repro / stress** *(릴리스 게이트 R-2′ — **F-14 증인이 *아니다***)* | `tests/repro_concurrent_puts_reconcile.rs`(reproCmd) · `tests/stress_concurrent_puts_reconcile.rs`(별도) | **reproCmd = 원 40-put 안무**(`PUT_WORKERS 40 × 1 = 40 total puts` · 정본 증거) · **stress = 증폭 1,000-put**(`40 × 25` · 별도 커버리지). 둘 다 반복 증인 ∧ 레이스 증인 ∧ `PASS ABORTED`. **정본은 §B-1 acceptance 3-a**(여기서 규모를 반복하지 않는다). ⚠ **게이트 `WITNESSES`에 미등록** — 릴리스 게이트 커버리지이지 발견-단언 대상 증인이 아니다 ⇒ **이름을 바꿔도 게이트/레지스트리는 불변**(reproCmd만 `bugfix-lock.json`에서 참조) | red RED 20/20 · green GREEN 20/20 |
 
 > ⚠⚠ **파일 · 타깃 · 테스트 함수명의 정본은 `scripts/f14-witness-gate.sh`의 레지스트리다**(★r22/P-35).
 > §B-1의 **증인 ID 표(0-c)는 그 스크립트의 거울**이고, 위 표는 *무엇을 단언하는가*를 적는다.
@@ -2411,7 +2433,7 @@ cargo test --release --lib -- reconcile_pass_survives_an_entry_that_vanishes_aft
 | Phase | 무대 | 단언 (+ 자기검증) |
 |---|---|---|
 | **E** (엔트리 루프) | `BALLAST` 48 × 256 KiB · `CANARY` 4(비트로트 = 루프 진입 신호) · `VICTIM_BLOB` 16(비트로트) · `VICTIM_TEMP` 8 · `ROUNDS_E = 6` · `gc_grace = 3600` · **포인터 0개**(⇒ **F-31 도달 불가** ⇒ W13의 GREEN은 **FS 무관**) | `Ok` · `quarantined == CANARY + (VICTIM_BLOB − ‖escaped‖)` · `gc_pending == BALLAST` · 전수 `assert_eq!` · `.gc-pending.json` 파싱 성공 · **`Σ‖escaped‖ ≥ MIN_STEPS_E (=6)`** |
-| **G** (`recover_graves`) | `R = 12`(rename 분기) + `K = 12`(remove 분기) · `ROUNDS_G = 3` · **트리거**: `.gc-grave-*`가 24 → 23 이하로 떨어지는 순간 남은 무덤 전부 삭제 | `Ok` · `gc_pending == K + (R − ‖escaped_R‖)` · escaped R = blob 부재 ∧ 무덤 부재(**날조 0**) · stepped K = blob 무손상 ∧ 무덤 부재 · 전수 `assert_eq!` · **`‖escaped_R‖ ≥ 1` ∧ `stepped_K ≥ 1` ∧ 합 ≥ `MIN_STEPS_G (=4)`** ⇒ **두 분기 모두** 덮었음을 증인이 스스로 증명 |
+| **G** (`recover_graves`) | `R = 12`(정본 blob **부재** ⇒ **rename 분기**) · `K = K_KILL(8) + K_KEEP(4) = 12`(정본 blob **무손상** ⇒ **remove 분기**) · `ROUNDS_G = 3` · **K의 무덤 내용 = *쓰레기***(정본 sha와 다르다) · **랑데부**(`.gc-grave-*` 개수 감소 = 복구 루프 진입 신호): 그 뒤 **`K_KILL` 무덤과 `R` 일부를 우리가 `remove_file`**(unlink)한다 — ⚠ **`K_KEEP` 무덤은 *절대* 건드리지 않는다** | `Ok` · `gc_pending == K + (R − ‖escaped_R‖)` · **`K_KEEP` 무덤 *전부* 소멸**(우리가 안 건드렸다 ⇒ 없앨 수 있는 건 **프로덕션의 remove 분기뿐** = **날조 불가능한 프로덕션 증거**) · **K 정본 *바이트 동일***(remove는 무덤을 *지우기만* 한다 ⇒ **rename으로 잘못 가는 뮤턴트는 쓰레기 무덤을 정본에 덮어써 격리**시킨다 ⇒ RED) · 무덤 잔재 0 · 전수 `assert_eq!` · **자기검증**: `escaped_R = { r ∈ R : 정본 부재 ∧ 무덤 부재 }`(rename 분기 = **unlink vs rename** ⇒ *둘 다 성공 가능* ⇒ 커버리지에 **쓰지 않는다** — Phase E의 함정) · **`killed_K`**(= 우리 unlink의 *승리 수*. K의 무덤 삭제 = **unlink vs unlink** ⇒ 프로덕션 `e.remove()`와 우리 `remove_file`은 **정확히 하나만** 성공 ⇒ 프로덕션이 `NotFound → Seen::Gone`을 밟은 **독립·날조 불가능한** 증거) · **`‖escaped_R‖ ≥ 1` ∧ `killed_K ≥ 1` ∧ 합 ≥ `MIN_STEPS_G (=4)`** ⇒ **두 분기 모두** 덮었음을 증인이 스스로 증명. ⚠ **M-REMOVE-NOOP 증명 요구**: 무덤 루프를 no-op으로 만드는 뮤턴트는 **옛 `stepped_K` 증인**(= 정본 존재 ∧ 무덤 부재 — K를 그렇게 심었으니 `stepped_K ≡ K`가 **프로덕션이 무엇을 했든 참** ⇒ R-4가 **공허**로 판정)에선 **exit 0**이고, **이 증인에선 `K_KEEP` 무덤이 남아 RED**다(옛-green/새-red 전사(轉寫)를 증거로 커밋한다) |
 | **T** (temp 삭제) | `gc_grace = 0` · **CANARY(4) ≺ BALLAST_T(32) ≺ TEMPS(16)** · `ROUNDS_T = 3` · **벽시계 슬립 0**(mtime 백데이트) | `Ok` · **`temps_deleted == TEMPS − stepped_t`** · `quarantined == CANARY` · 전수 `assert_eq!` · **`Σ stepped_t ≥ MIN_STEPS_T (=1)`** ⇒ **`Mut-Count` 킬**(뮤턴트는 사라진 temp도 센다) |
 
 > ⚠ **정직 — Phase E는 Temp 창(`Entry::metadata()`)을 자기검증하지 못한다**(`gc_grace = 3600`). **그 창을

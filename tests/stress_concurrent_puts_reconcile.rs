@@ -1,29 +1,13 @@
-//! **원(un-minimised) repro — F-14 릴리스 게이트 R-2′.**
+//! **증폭된 stress 커버리지 — F-14 (릴리스 게이트 R-2′).**
 //!
-//! 진단이 적은 원 repro는 이것이다: ***"정확히 40개 버퍼드 put이 reconcile과 경합한다."***
-//! `tests/adversarial.rs::concurrent_nested_puts_with_reconcile_loop_preserve_all`이 **바로 그
-//! 안무**(40 tasks × put 1개 = **40 total puts**)를 돌지만, 그 테스트는 red 판본에서
-//! `let _ = reconcile::run_once(..)`로 **결과를 버렸기 때문에** 버그를 매 실행 밟으면서도
-//! **초록**이었다. 이 파일은 그 안무를 **관측하는** 판본이다.
+//! ⚠ **이것은 reproCmd가 아니다.** 원(un-minimised) repro는 **정확히 40 puts**이고
+//! `tests/repro_concurrent_puts_reconcile.rs`에 있다(그게 `reproCmd`다). 이 파일은 같은 소멸-레이스
+//! 버그를 **1,000 puts**(40 workers × 25 rounds)로 **증폭**해 밟는 stress 판본이다 — timing-sensitive
+//! race의 압박을 키워 회귀를 넓게 잡는 커버리지일 뿐, red↔green 판정의 **정본 증거는 40-put repro**가
+//! 진다(R-2′: 증폭된 workload의 실패는 원 40-put 시나리오의 재현을 증명하지 못한다 ⇒ 둘을 분리한다).
 //!
-//! ## 원 안무를 한 글자도 바꾸지 않는다(R-2′의 절대 제약)
-//!
-//! **put은 정확히 40개**(`PUT_WORKERS` tasks × put 1개). put 수·라운드는 **불변**이다. 증폭된
-//! 1,000-put workload는 별도 `tests/stress_concurrent_puts_reconcile.rs`로 분리됐다 — 그것은
-//! reproCmd가 **아니다**. 재현율(원 안무 ~83%)을 실측 20/20으로 끌어올리는 조율은 **오직
-//! reconcile/관측 쪽 밀도**로만 한다 — put 안무는 한 글자도 건드리지 않는다:
-//!
-//! | 조율 | 무엇을 | 왜(put 불변) |
-//! |---|---|---|
-//! | **sleep 제거** | reconcile/관측 루프의 `sleep(3ms)` → `yield_now`(busy) | 스냅샷을 **수백 배** 자주 뜬다 |
-//! | **다중 reconcile 루프**(RL=4) | 같은 Store(D-3)의 `pass_lock`을 **끊임없이** 물어 패스가 틈 없이 이어진다 | `read_dir`가 폭풍 창에 **반드시** 걸린다 |
-//! | **다중 관측자**(OL=8) | 소멸 관측자를 여러 태스크로 | 소멸 관측 밀도↑ |
-//! | **decoy blob 선적재**(100개) | 폭풍 **전에** 유효 blob 100개를 심어 항목 루프를 늘린다 | 한 패스의 `read_dir`→stat **창을 수 ms로** 벌린다 ⇒ 스냅샷의 temp가 그 창에서 사라진다 |
-//!
-//! ⚠ **정직한 상한**: `pass_lock`(`pins.rs`)이 한 Store의 모든 패스를 **직렬화**하므로 `read_dir`
-//! 빈도는 `1/패스길이`로 묶인다. 위 조율로 단발 재현율은 **~99%**까지 오르지만(원 83% → 실측
-//! 20/20 관측), 폭풍이 극단적으로 짧은 실행에선 드물게 빗나갈 수 있다 — 잔여 ~1%는 이 봉인 때문에
-//! 하네스만으로는 없앨 수 없다(지휘자가 필요시 reproCmd를 다회 실행 래퍼로 결정화한다).
+//! 안무 자체는 원 repro와 동일하다: reconcile 루프가 `run_once`의 `Err`를 **버리지 않고 전수 계수**하고,
+//! 반복 증인(put in-flight 중 완주 패스)과 레이스 증인(소멸 레이스 실측)으로 비공허를 강제한다.
 //!
 //! ## 이 파일이 지키는 계약(R-2)
 //!
@@ -88,59 +72,38 @@ use std::time::Duration;
 mod common;
 use common::hex_sha;
 
-/// **원 안무 그대로 — 정확히 40 total puts**(40 tasks × put 1개). 이 수는 **불변**이다.
+/// 진단이 적은 규모 — **동시 put 40개**.
 const PUT_WORKERS: usize = 40;
-/// 워커당 put은 **정확히 1개**. (증폭은 `tests/stress_…`로 분리 — 여기서 늘리면 R-2′ 위반.)
-const PUTS_PER_WORKER: usize = 1;
-const TOTAL_PUTS: usize = PUT_WORKERS * PUTS_PER_WORKER; // = 40
-
-/// 스냅샷 밀도를 올리는 **테스트 하네스**의 조율(put 안무가 아니다 — 40 puts 불변). 이 노브들은
-/// 원 안무 ~83% 재현율을 실측 20/20으로 끌어올린다. 근거(§결정화):
-/// * `RECONCILE_LOOPS = 4` — 4개 루프가 같은 Store(D-3, `(*s).clone()`)의 `pass_lock`(`pins.rs`)을
-///   **끊임없이** 물어 패스가 **틈 없이** 이어진다 ⇒ `read_dir` 스냅샷이 폭풍 창에 반드시 걸린다.
-///   (핀 등록부가 in-process라 **반드시 공유** — `Store::new` 재구성 금지.)
-/// * `OBSERVER_LOOPS = 8` — 소멸 관측자 밀도(레이스 증인). 관측 창이 reconciler 창을 넘지 않게 blob도 읽는다.
-/// * `DECOY_BLOBS = 100` — **유효한** blob(이름=내용 sha) 100개를 폭풍 **전에** 심는다. reconcile 항목
-///   루프를 늘려 **한 패스의 `read_dir`와 그 항목의 stat 사이 창을 수 ms로 벌린다** ⇒ 스냅샷에 잡힌
-///   put temp가 그 창 안에서 **거의 반드시** rename돼 사라진다. decoy는 미참조 + grace 1h이므로
-///   **삭제되지 않는다**(안정) — put이 아니다(폭풍은 여전히 정확히 40개).
-const RECONCILE_LOOPS: usize = 4;
-const OBSERVER_LOOPS: usize = 8;
-const DECOY_BLOBS: usize = 100;
+/// 워커당 라운드. 폭풍이 **충분히 오래** 지속돼야 reconcile 루프와 겹치는 창이 생긴다.
+const ROUNDS: usize = 25;
+const TOTAL_PUTS: usize = PUT_WORKERS * ROUNDS;
 
 /// grace 1h — 갓 기록된 blob도 `.tmp-` 잔재도 **회수되지 않는다**(원 repro와 동일).
 /// ⇒ `.objects`에서 무언가가 **사라진다면** 그것은 **동시 put의 rename**뿐이다.
 const GC_GRACE: Duration = Duration::from_secs(3600);
 const SETTLE: Duration = Duration::from_secs(30);
 
-/// **반복 증인의 바닥** — put과 겹친 reconcile 패스 수(전 루프 합산). RL=4·DECOY=100에서 실측 floor는
-/// 5(≥250회 관측 최소값) · 전형 5~8 ⇒ **3으로** 잡아 여유를 둔다(비공허 + flake 0).
-const MIN_OVERLAPPED_PASSES: usize = 3;
+/// **반복 증인의 바닥** — put이 in-flight인 동안 완주(시도)한 패스 수.
+/// (실측 20회: green 16~24 · red 33~42 ⇒ 3배 이상의 여유.)
+const MIN_OVERLAPPED_PASSES: usize = 5;
 /// **레이스 증인의 바닥** — reconcile 패스가 in-flight인 동안 관측된 소멸 중 **put이 만든 temp의
-/// 소멸 수의 하한**(= `vanished_during_pass − passes`). 실측 floor 46 · 전형 100~190 ⇒ **20으로** 잡는다.
-const MIN_PUT_TEMP_VANISHES: usize = 20;
+/// 소멸 수의 하한**(= `vanished_during_pass − passes`; 위 §자기공격 참조).
+/// (실측 20회: green ≥283 · red ≥261 ⇒ 26배 이상의 여유.)
+const MIN_PUT_TEMP_VANISHES: usize = 10;
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn original_repro_concurrent_puts_do_not_abort_the_reconcile_pass() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stress_concurrent_puts_do_not_abort_the_reconcile_pass() {
     let d = tempfile::tempdir().unwrap();
     let root = d.path().to_path_buf();
     let objects = root.join(".objects");
     // 무대를 **먼저** 세운다: `.objects`가 없으면 `run_once`는 즉시 `Ok(default)`로 조기 반환한다
     // ⇒ 그런 패스는 **공허**하다(스냅샷도 안 뜬다). 반복 증인이 그것을 세면 안 된다.
     std::fs::create_dir_all(&objects).unwrap();
-    for i in 0..DECOY_BLOBS {
-        let content = format!("f14-decoy-blob-{i:08}").into_bytes();
-        let name = hex_sha(&content);
-        std::fs::write(objects.join(&name), &content).unwrap();
-    }
     let s = Arc::new(Store::new(root.clone()));
 
     let stop = Arc::new(AtomicBool::new(false));
     let puts_in_flight = Arc::new(AtomicUsize::new(0));
-    // **단조 증가** put 완료 카운터 — 패스가 폭풍을 **통째로 감싸** 양 끝에서 in_flight=0으로 보여도
-    // (긴 패스 · 짧은 폭풍) 그 사이 put이 완료됐음을 잡아낸다(반복 증인의 경계-계수 맹점 제거).
-    let puts_completed = Arc::new(AtomicUsize::new(0));
-    // 현재 reconcile 패스가 `run_once` **안**에 있는가(≥1이면 in-flight).
+    // 현재 reconcile 패스가 `run_once` **안**에 있는가(0 또는 1).
     let in_pass = Arc::new(AtomicUsize::new(0));
 
     let passes = Arc::new(AtomicUsize::new(0));
@@ -154,37 +117,31 @@ async fn original_repro_concurrent_puts_do_not_abort_the_reconcile_pass() {
     let vanished = Arc::new(AtomicUsize::new(0));
     let vanished_during_pass = Arc::new(AtomicUsize::new(0));
 
-    // ── ① reconcile 루프(들) — 결과를 **버리지 않는다** ────────────────────────────────────
+    // ── ① reconcile 루프 — 결과를 **버리지 않는다** ────────────────────────────────────────
     // ⚠ 여기서 패닉하지 않는다(`unwrap`/`expect` 금지). red에서 첫 `Err`에 패닉하면 **표본이 1개**로
     //    끝나고 반복·레이스 증인이 죽는다. **전수 계수**하고 마지막에 단언한다.
-    // ⚠ sleep 없음 — `yield_now`만(busy). 스냅샷을 훨씬 자주 떠 40번의 rename과 겹칠 확률을 올린다.
-    let mut recs = Vec::with_capacity(RECONCILE_LOOPS);
-    for _ in 0..RECONCILE_LOOPS {
+    let rec = {
         let s2 = (*s).clone(); // ⚠ 같은 Store를 공유해야 한다(핀 등록부가 in-process) — D-3
         let stop = stop.clone();
         let in_flight = puts_in_flight.clone();
-        let completed = puts_completed.clone();
         let in_pass = in_pass.clone();
         let passes = passes.clone();
         let overlapped = overlapped.clone();
         let errs = errs.clone();
         let errs_notfound = errs_notfound.clone();
         let first_err = first_err.clone();
-        recs.push(tokio::spawn(async move {
+        tokio::spawn(async move {
             while !stop.load(Ordering::Relaxed) {
                 let before = in_flight.load(Ordering::SeqCst);
-                let done_before = completed.load(Ordering::SeqCst);
                 in_pass.fetch_add(1, Ordering::SeqCst);
                 let r = reconcile::run_once(&s2, GC_GRACE, SETTLE).await;
                 in_pass.fetch_sub(1, Ordering::SeqCst);
                 let after = in_flight.load(Ordering::SeqCst);
-                let done_after = completed.load(Ordering::SeqCst);
 
                 passes.fetch_add(1, Ordering::Relaxed);
-                // **반복 증인**: put이 패스와 겹쳤다 — 시작/끝에 in-flight였거나(양 끝 표본), 혹은
-                // **패스가 도는 동안 put이 하나라도 완료**됐다(단조 카운터 델타 ⇒ 폭풍을 감싸는 긴
-                // 패스도 잡는다). 여전히 보수적이다: 겹쳤는데 안 세는 일은 있어도 그 역은 없다.
-                if before > 0 || after > 0 || done_after > done_before {
+                // **보수적 계수**: 패스의 시작·끝 **양 끝에서** put이 하나도 안 보이면 세지 않는다
+                // (중간에 겹쳤더라도 세지 않는다 ⇒ 과소계수).
+                if before > 0 || after > 0 {
                     overlapped.fetch_add(1, Ordering::Relaxed);
                 }
                 if let Err(e) = r {
@@ -199,12 +156,11 @@ async fn original_repro_concurrent_puts_do_not_abort_the_reconcile_pass() {
                 }
                 tokio::task::yield_now().await;
             }
-        }));
-    }
+        })
+    };
 
-    // ── ② 소멸 관측자(들) — reconcile 항목 루프와 **같은 모양**(스냅샷 → 항목당 stat) ──────────
-    let mut obss = Vec::with_capacity(OBSERVER_LOOPS);
-    for _ in 0..OBSERVER_LOOPS {
+    // ── ② 소멸 관측자 — reconcile 항목 루프와 **같은 모양**(스냅샷 → 항목당 stat) ──────────
+    let obs = {
         let stop = stop.clone();
         let in_pass = in_pass.clone();
         let objects = objects.clone();
@@ -212,7 +168,7 @@ async fn original_repro_concurrent_puts_do_not_abort_the_reconcile_pass() {
         let temps_seen = temps_seen.clone();
         let vanished = vanished.clone();
         let vanished_during_pass = vanished_during_pass.clone();
-        obss.push(tokio::spawn(async move {
+        tokio::spawn(async move {
             while !stop.load(Ordering::Relaxed) {
                 // 1) 스냅샷(= reconciler의 `read_dir` 한 걸음).
                 let mut names: Vec<String> = Vec::new();
@@ -251,38 +207,34 @@ async fn original_repro_concurrent_puts_do_not_abort_the_reconcile_pass() {
                 }
                 tokio::task::yield_now().await;
             }
-        }));
-    }
+        })
+    };
 
-    // ── ③ put 폭풍 — **정확히 40 tasks × put 1개**(불변). 내용은 **전부 유니크**(dedup되면 안 생긴다).
+    // ── ③ put 폭풍 — 40 워커 × ROUNDS 라운드. 내용은 **전부 유니크**(dedup되면 `.tmp-`가 안 생긴다) ──
     let mut hs = Vec::with_capacity(PUT_WORKERS);
     for w in 0..PUT_WORKERS {
         let s = s.clone();
         let in_flight = puts_in_flight.clone();
-        let completed = puts_completed.clone();
         hs.push(tokio::spawn(async move {
-            // 원 안무 그대로: 키 `dir/sub/file-{i}.bin`, 바디 `vec![i; 200]`(내용 유니크).
-            let key = format!("dir/sub/file-{w}.bin");
-            let body = vec![w as u8; 200];
-            // 유니크 내용 ⇒ `pin.blob_intact`가 거짓 ⇒ `write_atomic`이 **반드시**
-            // `.objects/.tmp-<uniq>`를 만들고 `<sha>`로 rename한다 = **소멸의 원천**.
-            in_flight.fetch_add(1, Ordering::SeqCst);
-            let out = s.put("b", &key, "application/octet-stream", "u", body).await;
-            in_flight.fetch_sub(1, Ordering::SeqCst);
-            completed.fetch_add(1, Ordering::SeqCst);
-            out.unwrap();
+            for r in 0..ROUNDS {
+                let key = format!("dir/sub/w{w}-r{r}.bin");
+                // 유니크 내용 ⇒ `pin.blob_intact`가 거짓 ⇒ `write_atomic`이 **반드시**
+                // `.objects/.tmp-<uniq>`를 만들고 `<sha>`로 rename한다 = **소멸의 원천**.
+                let mut body = format!("f14-original-repro-w{w}-r{r}-").into_bytes();
+                body.resize(200, b'.');
+                in_flight.fetch_add(1, Ordering::SeqCst);
+                let out = s.put("b", &key, "application/octet-stream", "u", body).await;
+                in_flight.fetch_sub(1, Ordering::SeqCst);
+                out.unwrap();
+            }
         }));
     }
     for h in hs {
         h.await.unwrap();
     }
     stop.store(true, Ordering::Relaxed);
-    for r in recs {
-        r.await.unwrap();
-    }
-    for o in obss {
-        o.await.unwrap();
-    }
+    rec.await.unwrap();
+    obs.await.unwrap();
 
     let (passes, overlapped) = (
         passes.load(Ordering::SeqCst),
@@ -305,8 +257,7 @@ async fn original_repro_concurrent_puts_do_not_abort_the_reconcile_pass() {
 
     // 실행 원문(요약 금지) — `--nocapture`로 보인다.
     eprintln!(
-        "REPRO WITNESS puts={TOTAL_PUTS} reconcile_loops={RECONCILE_LOOPS} \
-         observer_loops={OBSERVER_LOOPS} passes={passes} overlapped_passes={overlapped} \
+        "STRESS WITNESS puts={TOTAL_PUTS} passes={passes} overlapped_passes={overlapped} \
          scans={scans} temps_seen={temps_seen} vanished={vanished} \
          vanished_during_pass={vanished_during_pass} put_temp_vanishes={put_temp_vanishes} \
          pass_errs={errs} pass_errs_notfound={errs_notfound} first_err=[{first_err}]"
@@ -332,7 +283,8 @@ async fn original_repro_concurrent_puts_do_not_abort_the_reconcile_pass() {
          (요구: ≥{MIN_PUT_TEMP_VANISHES}). 패스 in-flight 중 소멸={vanished_during_pass} · \
          전체 소멸={vanished} · 패스={passes}(= reconcile 자신의 gc-pending temp 상계) · \
          관측된 `.tmp-`={temps_seen} · 스캔={scans}. 소멸이 일어나지 않았다면 이 테스트는 \
-         **버그를 밟지도 않은 것**이고 `pass_errs == 0`은 공허하다."
+         **버그를 밟지도 않은 것**이고 `pass_errs == 0`은 공허하다. \
+         재현율을 높여라(put 수 · 라운드 · 루프 횟수)."
     );
 
     // ── 관측 행동(단일 플립) — 사라진 항목은 **그 항목만** 건너뛰고 패스는 완주해야 한다 ────
@@ -347,7 +299,7 @@ async fn original_repro_concurrent_puts_do_not_abort_the_reconcile_pass() {
          {put_temp_vanishes}건)."
     );
 
-    // ── 원 repro의 나머지 절반 — 40개 중첩 키가 **전부 생존**하고 정합해야 한다 ────────────
+    // ── 원 repro의 나머지 절반 — 40×{ROUNDS}개 중첩 키가 **전부 생존**하고 정합해야 한다 ────
     let listed = s.list("b").await.unwrap();
     assert_eq!(listed.len(), TOTAL_PUTS, "중첩 키가 reconcile에서 유실됨");
     for (k, _) in &listed {
