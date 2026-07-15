@@ -273,18 +273,29 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 ### R-1 — release 프로파일 (`/tmp/f14-r1-release-final.txt`)
 
 ````text
-# R-1 release 프로파일 (최종 트리 b2d0f31)
+## R-1 — release 프로파일 통제 (교정판)
 
-$ cargo test --release --test repro_concurrent_puts_reconcile
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.43s
-exit=
+```
+# R-1 release 프로파일 통제 — 계획 :2204-2205의 정확한 2줄 (최종 트리 b2d0f31)
+
+⚠ r3의 R-1' 교정: 이전 판본은 첫 줄을 `--test repro_concurrent_puts_reconcile`로 잘못 돌렸다.
+계획이 명시한 정확한 타깃은 `--test reconcile_vanishing_entries`(Phase E/T release 통합 증인)다.
+
+$ cargo test --release --test reconcile_vanishing_entries
+running 2 tests
+test phase_t_temp_deletion_counts_only_what_we_deleted ... ok
+test phase_e_entry_loop_survives_vanishing_entries ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.76s
+exit=0
 
 $ cargo test --release --lib -- reconcile_pass_survives_an_entry_that_vanishes_after_the_snapshot reconcile_pass_survives_a_temp_that_vanishes_after_the_snapshot
+test store::pins::tests::vanished_temp_regression::reconcile_pass_survives_a_temp_that_vanishes_after_the_snapshot ... ok
+test store::pins::tests::vanished_entry_regression::reconcile_pass_survives_an_entry_that_vanishes_after_the_snapshot ... ok
 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 140 filtered out; finished in 0.28s
-exit=
-````
+exit=0
+```
 
-### R-3 — 증인 게이트 8개 술어 뮤테이션 (`/tmp/f14-r3-final.txt`)
+## R-3 — 증인 게이트 8개 술어 뮤테이션 (`/tmp/f14-r3-final.txt`)
 
 게이트 스크립트의 **8개 술어**(DISC·LIST-RC·N0·IGN·FAIL·RC + M-SIGPIPE + M-OLDPARSER)를 **하나씩 제거**한 사본으로 `--selftest`가 RED가 되는지 실증한다. 원본은 md5 불변(사본에만 뮤테이션). **8/8 RED · 살아남은 술어 0.**
 

@@ -1,0 +1,34 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "release",
+  "verdict": "needs-attention",
+  "summary": "No-ship: R-1 remains unproven. R-2 through R-4, the Phase G rewrite, flip records, scope, and preservation audit exposed no additional blocker.",
+  "planFile": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+  "planInDiff": null,
+  "reviewedFileCount": 30,
+  "target": "branch diff against main",
+  "reviewedSha": "f793e48ea74a005535555f9155e1bcc0edcdd9da",
+  "reviewedTree": "6e29c643428273c670c2a57d1cbc7e006139905d",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 1,
+  "planFindingCount": 0,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "Missing verification: required release-profile target",
+      "body": "The plan requires `cargo test --release --test reconcile_vanishing_entries` and identifies the two release commands as the sole control for profile bias (plan lines 2204-2206 and 2235). R-1 instead records the release repro target, so the required Phase E/T release integration witnesses were never captured. Both recorded `exit=` fields are also blank. Passing the repro and filtered lib tests does not cover this required risk surface.",
+      "file": "docs/reviews/reconcile-vanished-entry-aborts-pass/verification.md",
+      "line_start": 278,
+      "line_end": 284,
+      "confidence": 1,
+      "recommendation": "At green.sha, capture both exact release commands specified by the plan, including complete raw output and numeric exit statuses, then commit the corrected R-1 evidence.",
+      "isPlanFinding": false
+    }
+  ],
+  "next_steps": [
+    "Replace the R-1 transcript with script-captured output from the canonical release commands.",
+    "Repeat the release evidence audit after the corrected artifact is committed."
+  ]
+}
