@@ -1,0 +1,34 @@
+{
+  "ok": true,
+  "status": "ok",
+  "kind": "release",
+  "verdict": "needs-attention",
+  "summary": "No-ship: R-1 names the correct commands, but the sole release-profile compensating control still lacks trustworthy captured evidence.",
+  "planFile": "docs/bugfixes/reconcile-vanished-entry-aborts-pass.md",
+  "planInDiff": null,
+  "reviewedFileCount": 31,
+  "target": "branch diff against main",
+  "reviewedSha": "98e8901043607516f16f089bde4f8a44638c1e3d",
+  "reviewedTree": "534caddc8c27632033a76579db601e2d6b823cdb",
+  "codexStatus": 0,
+  "parseError": null,
+  "findingCount": 1,
+  "planFindingCount": 0,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "Missing verification: corrected R-1 is not backed by its raw capture",
+      "body": "The section identifies `/tmp/f14-r1-release-final.txt` as its raw source, but that file still contains the obsolete repro target and blank exit fields; it predates the correction commit. The newly inserted second release result also reproduces the existing debug regression result, including the 0.28s duration, without a corresponding corrected capture. Therefore the committed block is a manually edited assertion rather than auditable evidence that both release-profile commands ran, leaving B-1 profile bias unproven.",
+      "file": "docs/reviews/reconcile-vanished-entry-aborts-pass/verification.md",
+      "line_start": 273,
+      "line_end": 296,
+      "confidence": 0.99,
+      "recommendation": "Have the verification conductor capture both canonical commands directly at green.sha, including complete output and numeric exits, then replace the R-1 block from that capture and repair its mismatched Markdown fences.",
+      "isPlanFinding": false
+    }
+  ],
+  "next_steps": [
+    "Regenerate R-1 from a machine-owned raw capture at b2d0f31.",
+    "Commit the corrected transcript with balanced evidence fences, then repeat the scoped R-1 audit."
+  ]
+}
