@@ -1,0 +1,22 @@
+{
+  "kind": "bugfix-verify-green",
+  "bug": "reconcile-vanished-entry-aborts-pass",
+  "sha": "1e796065e70f6a968afb8018c4ba4841ff74c7d8",
+  "treeSha": "2fe99361ceb7b78fd93e513e2776d6d0177f5f69",
+  "regression": {
+    "exit": 0,
+    "passed": true,
+    "outputTail": "\nrunning 2 tests\ntest store::pins::tests::vanished_temp_regression::reconcile_pass_survives_a_temp_that_vanishes_after_the_snapshot ... ok\ntest store::pins::tests::vanished_entry_regression::reconcile_pass_survives_an_entry_that_vanishes_after_the_snapshot ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 139 filtered out; finished in 0.28s\n\n"
+  },
+  "characterization": {
+    "exit": 0,
+    "green": true,
+    "outputTail": "al_object_reads_are_no_store_and_vary_authorization ... ok\ntest query_key_decoding_and_validation_contract ... ok\ntest concurrent_nested_puts_with_reconcile_loop_preserve_all ... ok\ntest concurrent_same_key_put_delete_self_consistent ... ok\ntest concurrent_readers_never_observe_desync_on_same_size_overwrite ... ok\n\ntest result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.36s\n\n\nrunning 1 test\ntest responses_match_openapi_schema ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s\n\n\nrunning 8 tests\ntest blob_symlink_to_directory_propagates_isadirectory ... ok\ntest corrupt_dir_as_dangling_symlink_propagates_raw_notfound ... ok\ntest corrupt_dir_as_regular_file_propagates_enotdir ... ok\ntest symlinked_objects_dir_without_vanishing_is_unchanged ... ok\ntest public_listener_isolates_api_and_internal_buckets ... ok\ntest symlinked_objects_dir_with_a_vanished_entry_completes ... ok\ntest large_object_streaming_put_and_range_download ... ok\ntest dangling_temp_symlink_keeps_lstat_semantics ... ok\n\ntest result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.14s\n\n\nrunning 3 tests\ntest put_stream_midflight_temp_observed_and_preserved ... ok\ntest symlinked_commit_pointer_current_behavior ... ok\ntest on_disk_layout_golden_tree ... ok\n\ntest result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s\n\n\nrunning 5 tests\ntest does_not_serve_interactive_docs_ui ... ok\ntest spec_binary_upload_and_internal_only ... ok\ntest spec_object_ops_document_error_codes ... ok\ntest spec_download_declares_binary_range_and_key_grammar ... ok\ntest serves_generated_openapi_spec_unauthenticated ... ok\n\ntest result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s\n\n\nrunning 1 test\ntest dedup_put_during_reconcile_window_must_not_lose_blob ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.57s\n\n"
+  },
+  "repro": {
+    "exit": 0,
+    "reproduces": false,
+    "outputTail": "\nrunning 1 test\ntest original_repro_concurrent_puts_do_not_abort_the_reconcile_pass ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.51s\n\n"
+  },
+  "note": "written by bugfix-status.mjs --verify-flip (script-owned re-execution)"
+}
